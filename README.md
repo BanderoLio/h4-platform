@@ -120,6 +120,18 @@ path traversal, IDOR, hardcoded secrets и MD5, чтобы быстро срав
 `examples/vulnerable_app/` — намеренно уязвимое приложение (SQLi, command
 injection, path traversal, IDOR, хардкод-секреты, MD5) для проверки системы.
 
+## Тесты
+
+Юнит-тесты на stdlib `unittest` (без сети и без LLM):
+
+```bash
+python -m unittest discover -s tests
+```
+
+Покрывают: схему находок (парсинг, дедупликация, quality gate), рендер и
+сохранение отчётов, структуру графа, детерминированные узлы и
+интерактивные узлы `clarify`/`gate` (с подменённым `ask_user`).
+
 ## Структура
 
 ```
