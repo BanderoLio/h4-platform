@@ -1,62 +1,32 @@
-"""Агент-оркестратор — точка входа системы.
+"""Оркестратор системы — тонкая обёртка над детерминированным графом.
 
-Принимает задачу от человека, проводит разведку через миньонов, при
-неоднозначности задаёт вопросы пользователю, делегирует работу
-специалистам по классам уязвимостей и консолидирует итоговый отчёт.
+Управление потоком вынесено в `agentsec.graph` (StateGraph): recon →
+параллельные специалисты → consolidate → validate → gate → report.
+Здесь — только запуск графа и возврат итогового состояния.
 """
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
+from typing import Any
 
-from ..config import CONFIG, elapsed
-from ..llm import build_llm
-from ..prompts import ORCHESTRATOR_PROMPT
-from ..tools.filesystem import glob_files, grep, list_dir, read_file
-from ..tools.interaction import ask_user
-from .minions import make_minion_tools
-from .specialists import make_specialist_tools
+from ..config import CONFIG
+from ..graph import build_graph
 
 
-def build_orchestrator():
-    """Собирает граф оркестратора со всеми инструментами и сабагентами."""
-    llm = build_llm()
-    # Оркестратор только читает и координирует: чтение + вопрос пользователю
-    # + миньоны для разведки + специалисты для делегирования.
-    tools = [read_file, list_dir, glob_files, grep, ask_user]
-    tools += make_minion_tools()
-    tools += make_specialist_tools()
-    return create_react_agent(llm, tools, prompt=ORCHESTRATOR_PROMPT)
+def run_analysis(task: str) -> dict[str, Any]:
+    """Запускает анализ и возвращает итоговое состояние графа.
 
-
-def _trace(msg) -> None:
-    """Печатает компактный след работы оркестратора по шагам с отметкой времени."""
-    t = elapsed()
-    if isinstance(msg, AIMessage):
-        for tc in msg.tool_calls or []:
-            args = ", ".join(f"{k}={str(v)[:80]}" for k, v in tc["args"].items())
-            print(f"[+{t}]   [оркестратор → {tc['name']}]  {args}")
-        if msg.content and not msg.tool_calls:
-            print(f"[+{t}]   [оркестратор: формирует итоговый отчёт]")
-    elif isinstance(msg, ToolMessage):
-        preview = " ".join(str(msg.content or "").split())[:140]
-        print(f"[+{t}]   [{msg.name} → результат]  {preview} ...")
+    В состоянии: `report_md` (итоговый markdown), `validated_findings`
+    (структурные `Finding`), `verdict` (результат quality gate),
+    `coverage` (что проанализировано, где пробелы).
+    """
+    graph = build_graph()
+    initial = {"task": task, "repo": str(CONFIG.analysis_root)}
+    # recursion_limit с запасом: граф плоский, но specialist-узлы внутри
+    # запускают ReAct-агентов — лимит ограничивает их собственные шаги.
+    final_state = graph.invoke(initial, {"recursion_limit": CONFIG.recursion_limit})
+    return final_state
 
 
 def run(task: str) -> str:
-    """Запускает анализ со стримингом шагов и возвращает итоговый markdown-отчёт."""
-    orchestrator = build_orchestrator()
-    final = ""
-    for chunk in orchestrator.stream(
-        {"messages": [("user", task)]},
-        {"recursion_limit": CONFIG.recursion_limit},
-        stream_mode="updates",
-    ):
-        for update in chunk.values():
-            if not isinstance(update, dict):
-                continue
-            for msg in update.get("messages", []):
-                _trace(msg)
-                if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                    final = msg.content
-    return final
+    """Совместимость: запускает анализ и возвращает только markdown-отчёт."""
+    return run_analysis(task).get("report_md", "")
