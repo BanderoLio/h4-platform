@@ -1,0 +1,80 @@
+services:
+  api:
+    container_name: hack4_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT_EXTERNAL}:${API_PORT_INTERNAL}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app_network
+    volumes:
+      - repos_data:/data/repos
+      - sqlite_data:/data/db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${API_PORT_INTERNAL}/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${API_PORT_INTERNAL}"
+
+  worker:
+    container_name: hack4_worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - app_network
+    volumes:
+      - repos_data:/data/repos
+      - sqlite_data:/data/db
+    command: python -m arq app.worker.tasks.WorkerSettings
+
+  redis:
+    container_name: hack4_redis
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    ports:
+      - "${REDIS_PORT_EXTERNAL}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "--no-auth-warning",
+          "-a",
+          "${REDIS_PASSWORD}",
+          "ping",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  repos_data:
+  sqlite_data:
+  redis_data:
+
+networks:
+  app_network:
+    driver: bridge
