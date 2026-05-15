@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib import error, request
 from urllib.parse import unquote, urlparse
 
 
@@ -17,6 +18,7 @@ from urllib.parse import unquote, urlparse
 class ScanRecord:
     scan_id: str
     repo_url: str
+    webhook_url: str | None
     created_at: float
     ready_at: float
 
@@ -27,12 +29,13 @@ class ScanStore:
         self._records: dict[str, ScanRecord] = {}
         self._lock = threading.Lock()
 
-    def start(self, repo_url: str) -> ScanRecord:
+    def start(self, repo_url: str, *, webhook_url: str | None = None) -> ScanRecord:
         now = time.monotonic()
         scan_id = uuid.uuid4().hex
         record = ScanRecord(
             scan_id=scan_id,
             repo_url=repo_url,
+            webhook_url=webhook_url,
             created_at=now,
             ready_at=now + self._report_delay,
         )
@@ -60,6 +63,28 @@ class MockScanServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_class)
         self.store = ScanStore(report_delay)
 
+    def schedule_webhook(self, record: ScanRecord) -> None:
+        delay = max(0.0, record.ready_at - time.monotonic())
+        thread = threading.Thread(target=self._send_webhook_after_delay, args=(record, delay), daemon=True)
+        thread.start()
+
+    def _send_webhook_after_delay(self, record: ScanRecord, delay: float) -> None:
+        time.sleep(delay)
+        if not record.webhook_url:
+            return
+
+        payload = json.dumps({"scan_id": record.scan_id, "report": _build_report(record)}).encode("utf-8")
+        req = request.Request(
+            record.webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            request.urlopen(req, timeout=10).close()
+        except (error.URLError, TimeoutError) as exc:
+            sys.stderr.write(f"Webhook delivery failed for {record.scan_id}: {exc}\n")
+
 
 class MockScanHandler(BaseHTTPRequestHandler):
     server: MockScanServer
@@ -79,15 +104,21 @@ class MockScanHandler(BaseHTTPRequestHandler):
         if not isinstance(repo_url, str) or not repo_url.strip():
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "repo_url is required"})
             return
+        webhook_url = payload.get("webhook_url")
+        if webhook_url is not None and (not isinstance(webhook_url, str) or not webhook_url.strip()):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "webhook_url must be a non-empty string"})
+            return
 
-        record = self.server.store.start(repo_url.strip())
+        record = self.server.store.start(
+            repo_url.strip(),
+            webhook_url=webhook_url.strip() if isinstance(webhook_url, str) else None,
+        )
+        if record.webhook_url:
+            self.server.schedule_webhook(record)
+
         self._send_json(
-            HTTPStatus.OK,
-            {
-                "scan_id": record.scan_id,
-                "status": "started",
-                "report_url": f"/scan/{record.scan_id}/report",
-            },
+            HTTPStatus.ACCEPTED,
+            {"scan_id": record.scan_id},
         )
 
     def do_GET(self) -> None:
@@ -97,16 +128,15 @@ class MockScanHandler(BaseHTTPRequestHandler):
             return
 
         record = self.server.store.get(scan_id)
-        if record is None or not self.server.store.is_ready(record):
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "report is not ready"})
+        if record is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"detail": "scan not found"})
             return
 
-        report = _build_report(record).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(report)))
-        self.end_headers()
-        self.wfile.write(report)
+        if not self.server.store.is_ready(record):
+            self._send_json(HTTPStatus.ACCEPTED, {"status": "running", "report": None})
+            return
+
+        self._send_json(HTTPStatus.OK, {"status": "done", "report": _build_report(record)})
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"{self.address_string()} - {format % args}\n")

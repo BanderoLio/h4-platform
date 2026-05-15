@@ -17,7 +17,21 @@ class ScanApiError(RuntimeError):
 
 
 class ReportNotReady(ScanApiError):
-    """Raised when the report endpoint returns 404."""
+    """Raised when the report endpoint returns 202 with a running status."""
+
+
+class ScanNotFound(ScanApiError):
+    """Raised when the scan API cannot find a scan id."""
+
+
+class ScanFailed(ScanApiError):
+    """Raised when a scan finishes with a failed status."""
+
+
+@dataclass(frozen=True)
+class ReportResponse:
+    status: str
+    report: str | None
 
 
 @dataclass(frozen=True)
@@ -25,38 +39,61 @@ class ScanClient:
     base_url: str = DEFAULT_BASE_URL
     timeout: float = 30.0
 
-    def start_scan(self, repo_url: str) -> str:
-        payload = json.dumps({"repo_url": repo_url}).encode("utf-8")
-        response = self._request(
+    def start_scan(self, repo_url: str, *, webhook_url: str | None = None) -> str:
+        request_body = {"repo_url": repo_url}
+        if webhook_url:
+            request_body["webhook_url"] = webhook_url
+
+        payload = json.dumps(request_body).encode("utf-8")
+        response = self._request_json(
             "POST",
             "/scan/start",
             body=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            expected_statuses={202},
         )
 
-        try:
-            data = json.loads(response.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ScanApiError("POST /scan/start returned invalid JSON") from exc
-
-        scan_id = _extract_scan_id(data)
+        scan_id = _extract_scan_id(response.data)
         if not scan_id:
             raise ScanApiError("POST /scan/start response does not contain a scan id")
         return scan_id
 
-    def get_report(self, scan_id: str) -> bytes:
+    def get_report_status(self, scan_id: str) -> ReportResponse:
         escaped_id = quote(scan_id, safe="")
-        try:
-            return self._request(
-                "GET",
-                f"/scan/{escaped_id}/report",
-                headers={"Accept": "text/plain"},
-            )
-        except error.HTTPError as exc:
-            if exc.code == 404:
-                exc.close()
-                raise ReportNotReady(f"Report for scan {scan_id} is not ready") from exc
-            raise _api_error_from_http(exc) from exc
+        response = self._request_json(
+            "GET",
+            f"/scan/{escaped_id}/report",
+            headers={"Accept": "application/json"},
+            expected_statuses={200, 202},
+        )
+
+        if not isinstance(response.data, dict):
+            raise ScanApiError("GET report response must be a JSON object")
+
+        status = response.data.get("status")
+        report = response.data.get("report")
+        if not isinstance(status, str):
+            raise ScanApiError("GET report response does not contain a valid status")
+        if report is not None and not isinstance(report, str):
+            raise ScanApiError("GET report response contains a non-text report")
+
+        if response.status == 202:
+            if status != "running":
+                raise ScanApiError(f"GET report returned HTTP 202 with unexpected status {status!r}")
+            return ReportResponse(status=status, report=report)
+
+        if status not in {"done", "failed"}:
+            raise ScanApiError(f"GET report returned unexpected status {status!r}")
+        return ReportResponse(status=status, report=report)
+
+    def get_report(self, scan_id: str) -> str:
+        response = self.get_report_status(scan_id)
+        if response.status == "running":
+            raise ReportNotReady(f"Report for scan {scan_id} is still running")
+        if response.status == "failed":
+            raise ScanFailed(response.report or f"Scan {scan_id} failed")
+        if response.report is None:
+            raise ScanApiError("GET report response does not contain report text")
+        return response.report
 
     def wait_for_report(
         self,
@@ -64,7 +101,7 @@ class ScanClient:
         *,
         interval: float = 5.0,
         timeout: float | None = 600.0,
-    ) -> bytes:
+    ) -> str:
         started_at = time.monotonic()
 
         while True:
@@ -78,8 +115,36 @@ class ScanClient:
     def save_report(self, scan_id: str, output: Path, *, wait: bool = False) -> Path:
         output.parent.mkdir(parents=True, exist_ok=True)
         report = self.wait_for_report(scan_id) if wait else self.get_report(scan_id)
-        output.write_bytes(report)
+        output.write_text(report, encoding="utf-8")
         return output
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        expected_statuses: set[int],
+    ) -> "_JsonResponse":
+        headers = {"Content-Type": "application/json", **(headers or {})}
+        try:
+            status, response_body = self._request(method, path, body=body, headers=headers)
+        except error.HTTPError as exc:
+            if exc.code == 404:
+                details = _read_http_error_json(exc)
+                detail = details.get("detail") if isinstance(details, dict) else None
+                raise ScanNotFound(str(detail or "scan not found")) from exc
+            raise _api_error_from_http(exc) from exc
+
+        if status not in expected_statuses:
+            raise ScanApiError(f"Scan API returned unexpected HTTP {status}")
+
+        try:
+            data = json.loads(response_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ScanApiError(f"{method} {path} returned invalid JSON") from exc
+        return _JsonResponse(status=status, data=data)
 
     def _request(
         self,
@@ -88,13 +153,13 @@ class ScanClient:
         *,
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
-    ) -> bytes:
+    ) -> tuple[int, bytes]:
         url = f"{self.base_url.rstrip('/')}{path}"
         req = request.Request(url, data=body, headers=headers or {}, method=method)
 
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
-                return response.read()
+                return response.status, response.read()
         except error.HTTPError:
             raise
         except error.URLError as exc:
@@ -123,3 +188,19 @@ def _api_error_from_http(exc: error.HTTPError) -> ScanApiError:
     details = exc.read().decode("utf-8", errors="replace").strip()
     suffix = f": {details}" if details else ""
     return ScanApiError(f"Scan API returned HTTP {exc.code}{suffix}")
+
+
+def _read_http_error_json(exc: error.HTTPError) -> Any:
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    finally:
+        exc.close()
+
+
+@dataclass(frozen=True)
+class _JsonResponse:
+    status: int
+    data: Any
