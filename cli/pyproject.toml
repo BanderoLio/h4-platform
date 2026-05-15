@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-scan-cli"
+version = "0.1.0"
+description = "CLI client for starting repository scans and downloading text reports."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Agent Scan" }]
+
+[project.scripts]
+agent-scan = "agent_scan_cli.cli:main"
+agent-scan-mock-server = "agent_scan_cli.mock_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
