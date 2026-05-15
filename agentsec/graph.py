@@ -18,6 +18,7 @@ import json
 import re
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from .agents.specialists import SPECIALIST_LABELS, make_specialist_runners
 from .agents.validator import make_validator_node
@@ -84,9 +85,19 @@ def _route_after_intake(state: AnalysisState) -> str:
 
 
 def _clarify(state: AnalysisState) -> dict:
-    """Задаёт уточняющий вопрос пользователю (только в интерактиве)."""
+    """Задаёт уточняющий вопрос пользователю (только в интерактиве).
+
+    В server-режиме граф ставится на паузу через `interrupt()`: ответ
+    приходит позже HTTP-запросом и возобновляет прогон. В CLI-режиме —
+    привычный синхронный запрос в stdin.
+    """
     question = state.get("clarifying_question") or "Уточните скоуп анализа."
-    answer = ask_user.invoke({"question": question})
+    if CONFIG.server_mode:
+        # Узел при возобновлении выполняется заново целиком; кода с
+        # побочными эффектами до interrupt() здесь нет — это безопасно.
+        answer = interrupt({"type": "clarify", "question": question})
+    else:
+        answer = ask_user.invoke({"question": question})
     return {"clarifications": [{"question": question, "answer": answer}]}
 
 
@@ -167,6 +178,11 @@ def _make_specialist_node(vuln_class: str, runner):
         for attempt in range(1, CONFIG.specialist_retries + 2):
             try:
                 markdown = runner(task)
+            except TimeoutError as err:
+                # Ретрай по таймауту лишь сожжёт ещё один лимит времени —
+                # сразу фиксируем пробел покрытия.
+                last_err = str(err)[:200]
+                break
             except Exception as err:  # noqa: BLE001
                 last_err = str(err)[:200]
                 continue
@@ -215,11 +231,18 @@ def _gate(state: AnalysisState) -> dict:
          f"(находок: {verdict['total_findings']}, пробелов: {len(gaps)})")
 
     if CONFIG.interactive:
-        answer = ask_user.invoke({"question": (
+        prompt = (
             f"Рекомендация quality gate: {verdict['verdict']}. "
             f"Найдено блокирующих: {len(verdict['blocking'])}. "
             "Отдавать проект на сборку? (да / нет / комментарий)"
-        )})
+        )
+        if CONFIG.server_mode:
+            # compute_verdict выше — чистая и дешёвая функция; при
+            # возобновлении узел пересчитает её повторно, это безопасно.
+            answer = interrupt(
+                {"type": "gate", "question": prompt, "verdict": verdict})
+        else:
+            answer = ask_user.invoke({"question": prompt})
         verdict["user_decision"] = answer
         verdict["approved_for_build"] = answer.strip().lower().startswith(
             ("да", "yes", "y"))
@@ -243,8 +266,14 @@ def _report(state: AnalysisState) -> dict:
 
 # --- сборка графа ------------------------------------------------------------
 
-def build_graph():
-    """Собирает и компилирует StateGraph оркестратора."""
+def build_graph(checkpointer=None):
+    """Собирает и компилирует StateGraph оркестратора.
+
+    `checkpointer` (LangGraph saver) включает персистентность состояния:
+    нужен для паузы на `interrupt()` и возобновления сессии. При
+    `checkpointer=None` поведение идентично компиляции без аргументов —
+    это CLI-путь.
+    """
     runners = (
         {c: (lambda _t: "") for c in _FOCUS_CLASSES}
         if CONFIG.stub_specialists
@@ -281,4 +310,4 @@ def build_graph():
     graph.add_edge("gate", "report")
     graph.add_edge("report", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

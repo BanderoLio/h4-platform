@@ -12,6 +12,8 @@ __pycache__/
 
 # Артефакты анализа
 *.db
+*.db-wal
+*.db-shm
 reports/
 
 .claude/

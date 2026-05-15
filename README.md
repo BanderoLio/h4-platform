@@ -130,7 +130,32 @@ python -m unittest discover -s tests
 
 Покрывают: схему находок (парсинг, дедупликация, quality gate), рендер и
 сохранение отчётов, структуру графа, детерминированные узлы и
-интерактивные узлы `clarify`/`gate` (с подменённым `ask_user`).
+интерактивные узлы `clarify`/`gate` (с подменённым `ask_user`), сквозной
+прогон графа на стаб-LLM, персистентность сессий и паузу/возобновление.
+
+## Сессии и server-режим
+
+Помимо CLI система работает как сервис с историей сканов и продолжением
+(как чат-сессии в IDE). Граф ставится на паузу на интерактивных точках
+(`clarify`, `gate`) через LangGraph `interrupt()`, состояние сохраняется
+в SQLite-чекпоинтере по `thread_id` и возобновляется позже.
+
+Фасад `agentsec/session.py` — единственная точка интеграции для внешнего
+HTTP-бэкенда (FastAPI живёт в отдельном репозитории):
+
+```python
+from agentsec.session import start_session, resume_session, get_session, list_sessions
+
+sid = start_session(task, repo)        # ставит скан в очередь, возвращает id
+rec = get_session(sid)                 # статус: running / awaiting_input / completed / failed
+resume_session(sid, "ответ пользователя")   # продолжает скан с паузы
+list_sessions(limit=50)                # история, новейшие первыми
+```
+
+Сканы выполняются одним фоновым воркером (по одному за раз — `CONFIG`
+глобальный). Метаданные сессий и чекпоинты графа лежат в одном файле
+`CONFIG.session_db_path`. CLI server-режим не включает — поведение
+консоли не меняется (`server_mode=False`, чекпоинтер не используется).
 
 ## Структура
 
@@ -143,6 +168,10 @@ agentsec/
   schema.py                  Finding, Coverage, дедуп, парсер, compute_verdict
   state.py                   AnalysisState — состояние графа оркестрации
   graph.py                   детерминированный StateGraph оркестрации
+  session.py                 фасад сессий: история + пауза/возобновление
+  persistence/
+    store.py                 SQLite-хранилище метаданных сессий
+    checkpointer.py           фабрика SQLite-чекпоинтера LangGraph
   tools/
     filesystem.py            read/write/edit/ls/glob/grep (в пределах корня анализа)
     interaction.py           ask_user

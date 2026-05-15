@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Callable
 
@@ -69,15 +70,33 @@ def make_specialist_runners() -> dict[str, Callable[[str], str]]:
         def _run(task: str) -> str:
             t0 = time.perf_counter()
             print(f"[+{elapsed()}]     >> специалист [{label}] запущен")
-            try:
-                result = agent.invoke({"messages": [("user", task)]}, run_cfg)
-                out = result["messages"][-1].content or ""
-            except Exception as err:  # noqa: BLE001 — сбой спеца не роняет граф
-                dt = time.perf_counter() - t0
-                print(f"[+{elapsed()}]     !! специалист [{label}] упал за "
-                      f"{dt:.0f}с: {err}")
-                raise
+            # ReAct-петля исполняется в отдельном потоке: join с таймаутом
+            # даёт жёсткий лимит времени. Поток daemon — зависший вызов не
+            # держит процесс на выходе (его токены просто отбрасываются).
+            box: dict = {}
+
+            def _work() -> None:
+                try:
+                    box["result"] = agent.invoke(
+                        {"messages": [("user", task)]}, run_cfg)
+                except Exception as err:  # noqa: BLE001
+                    box["error"] = err
+
+            worker = threading.Thread(target=_work, daemon=True)
+            worker.start()
+            worker.join(CONFIG.specialist_timeout_sec)
             dt = time.perf_counter() - t0
+            if worker.is_alive():
+                print(f"[+{elapsed()}]     !! специалист [{label}] превысил "
+                      f"лимит {CONFIG.specialist_timeout_sec}с — прерван")
+                raise TimeoutError(
+                    f"специалист [{label}] не уложился в "
+                    f"{CONFIG.specialist_timeout_sec}с")
+            if "error" in box:
+                print(f"[+{elapsed()}]     !! специалист [{label}] упал за "
+                      f"{dt:.0f}с: {box['error']}")
+                raise box["error"]
+            out = box["result"]["messages"][-1].content or ""
             print(f"[+{elapsed()}]     << специалист [{label}] завершил за "
                   f"{dt:.0f}с, отчёт {len(out)} симв.")
             return out

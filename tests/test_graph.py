@@ -125,6 +125,42 @@ class TestClarify(unittest.TestCase):
         self.assertEqual(out["clarifications"][0]["answer"], "смотри каталог src/")
 
 
+class TestSpecialistNode(unittest.TestCase):
+    def setUp(self) -> None:
+        self._stub = CONFIG.stub_specialists
+        CONFIG.stub_specialists = False
+
+    def tearDown(self) -> None:
+        CONFIG.stub_specialists = self._stub
+
+    def test_timeout_marks_coverage_gap_without_retry(self):
+        calls = []
+
+        def _slow_runner(_task: str) -> str:
+            calls.append(1)
+            raise TimeoutError("специалист не уложился в лимит")
+
+        node = G._make_specialist_node("injection", _slow_runner)
+        out = node({"task": "t", "recon": "", "scope": {}})
+        # Таймаут -> пробел покрытия, и ровно одна попытка (без ретрая).
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["coverage"][0].status, "gap")
+        self.assertEqual(out["coverage"][0].area, "injection")
+
+    def test_empty_report_is_retried(self):
+        calls = []
+
+        def _empty_runner(_task: str) -> str:
+            calls.append(1)
+            return ""
+
+        node = G._make_specialist_node("secrets", _empty_runner)
+        out = node({"task": "t", "recon": "", "scope": {}})
+        # Пустой отчёт -> ретраи (specialist_retries + 1 попытка).
+        self.assertEqual(len(calls), CONFIG.specialist_retries + 1)
+        self.assertEqual(out["coverage"][0].status, "gap")
+
+
 class TestReport(unittest.TestCase):
     def test_report_renders_markdown(self):
         state = {
