@@ -7,14 +7,14 @@ from tests.conftest import AUTH
 async def test_start_scan_returns_session_id_from_agentsec(client, monkeypatch):
     called = {}
 
-    def fake_start_session(*, task, repo, interactive):
+    def fake_start_session(*, task, repo, interactive, session_id=None):
         called["task"] = task
         called["repo"] = repo
         called["interactive"] = interactive
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
-    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda *_: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -34,12 +34,12 @@ async def test_start_scan_returns_session_id_from_agentsec(client, monkeypatch):
 async def test_start_scan_passes_interactive_flag(client, monkeypatch):
     called = {}
 
-    def fake_start_session(*, task, repo, interactive):
+    def fake_start_session(*, task, repo, interactive, session_id=None):
         called["interactive"] = interactive
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
-    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda *_: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -54,12 +54,12 @@ async def test_start_scan_passes_interactive_flag(client, monkeypatch):
 async def test_start_scan_uses_query_as_task(client, monkeypatch):
     called = {}
 
-    def fake_start_session(*, task, repo, interactive):
+    def fake_start_session(*, task, repo, interactive, session_id=None):
         called["task"] = task
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
-    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda *_: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -128,11 +128,11 @@ async def test_start_scan_rejects_loopback_webhook_url(client):
 
 @pytest.mark.asyncio
 async def test_start_scan_returns_503_when_session_layer_unavailable(client, monkeypatch):
-    def fake_start_session(*, task, repo, interactive):
+    def fake_start_session(*, task, repo, interactive, session_id=None):
         raise RuntimeError("session backend down")
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
-    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda *_: "/tmp/local-repo")
     resp = await client.post(
         "/scan/start",
         json={"repo_url": "https://github.com/example/repo"},
@@ -145,7 +145,7 @@ async def test_start_scan_returns_503_when_session_layer_unavailable(client, mon
 async def test_start_scan_returns_422_when_repo_clone_fails(client, monkeypatch):
     from fastapi import HTTPException
 
-    def fake_materialize_repo(repo_url: str):
+    def fake_materialize_repo(*args):
         raise HTTPException(status_code=422, detail="failed to clone repository: boom")
 
     monkeypatch.setattr("app.routes.scan._materialize_repo", fake_materialize_repo)
@@ -270,3 +270,83 @@ async def test_resume_scan_conflict_when_not_awaiting_input(client, monkeypatch)
         headers=AUTH,
     )
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_start_scan_requires_exactly_one_source(client):
+    # Neither repo_url nor repo_path -> rejected by the model validator.
+    resp = await client.post("/scan/start", json={}, headers=AUTH)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_start_scan_rejects_repo_path_when_disabled(client):
+    # ALLOWED_LOCAL_ROOTS is unset in the test env -> local-path scanning off.
+    resp = await client.post(
+        "/scan/start",
+        json={"repo_path": "/tmp/some/repo"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_start_scan_accepts_repo_path(client, monkeypatch):
+    called = {}
+
+    def fake_start_session(*, task, repo, interactive, session_id=None):
+        called["repo"] = repo
+        return "sess-local"
+
+    monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
+    monkeypatch.setattr("app.routes.scan._resolve_local_repo", lambda p: "/srv/code/app")
+
+    resp = await client.post(
+        "/scan/start",
+        json={"repo_path": "/srv/code/app", "query": "audit"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 202
+    assert resp.json() == {"scan_id": "sess-local"}
+    assert called["repo"] == "/srv/code/app"
+
+
+@pytest.mark.asyncio
+async def test_get_result_completed(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.scan.get_session",
+        lambda session_id: {
+            "id": session_id,
+            "status": "completed",
+            "task": "audit",
+            "repo": "/srv/code/app",
+            "verdict": {"verdict": "FAIL", "total_findings": 1, "blocking": ["F-001"],
+                        "severity_counts": {"High": 1}},
+            "findings": [{"id": "F-001", "title": "SQLi", "severity": "High",
+                          "file": "app/db.py:42", "cwe": "CWE-89"}],
+            "coverage": [{"area": "injection", "status": "done"}],
+        },
+    )
+    resp = await client.get("/scan/sess-1/result", headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["summary"]["verdict"] == "FAIL"
+    assert body["summary"]["exit_code"] == 1
+    assert len(body["problems"]) == 1
+    problem = body["problems"][0]
+    assert problem["id"] == "F-001"
+    assert problem["file"] == "app/db.py"
+    assert problem["line"] == 42
+
+
+@pytest.mark.asyncio
+async def test_get_result_running(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.routes.scan.get_session",
+        lambda session_id: {"id": session_id, "status": "running"},
+    )
+    resp = await client.get("/scan/sess-1/result", headers=AUTH)
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "running"
+    assert resp.json()["problems"] == []

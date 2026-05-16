@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -65,6 +66,38 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(output.read_text(), "plain text report")
+
+    def test_result_command_writes_json_and_exits_with_quality_gate_code(self) -> None:
+        result_payload = {
+            "scan_id": "scan-9",
+            "status": "completed",
+            "summary": {"verdict": "FAIL", "exit_code": 1, "total_problems": 2,
+                        "severity_counts": {"High": 2}},
+            "problems": [{"id": "F-001"}, {"id": "F-002"}],
+        }
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "result.json"
+            with patch("agent_scan_cli.cli.ScanClient.wait_for_result", return_value=result_payload):
+                exit_code = main(["result", "scan-9", "--output", str(output)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(json.loads(output.read_text())["summary"]["verdict"], "FAIL")
+
+    def test_result_command_exits_zero_on_pass(self) -> None:
+        result_payload = {"status": "completed", "summary": {"verdict": "PASS", "exit_code": 0},
+                          "problems": []}
+        with TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "result.json"
+            with patch("agent_scan_cli.cli.ScanClient.wait_for_result", return_value=result_payload):
+                exit_code = main(["result", "scan-9", "--output", str(output)])
+
+            self.assertEqual(exit_code, 0)
+
+    def test_result_command_no_wait_reports_not_ready(self) -> None:
+        with patch("agent_scan_cli.cli.ScanClient.get_result", side_effect=ReportNotReady("pending")):
+            exit_code = main(["result", "scan-9", "--no-wait"])
+
+        self.assertEqual(exit_code, 4)
 
     def test_no_subcommand_is_valid_for_interactive_mode(self) -> None:
         args = build_parser().parse_args([])

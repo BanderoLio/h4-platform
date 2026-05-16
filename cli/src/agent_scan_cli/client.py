@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib import error, request
 from urllib.parse import quote
+
+
+_HTTP_URL = re.compile(r"https?://", re.IGNORECASE)
 
 
 DEFAULT_BASE_URL = "http://localhost:8000"
@@ -40,10 +44,17 @@ class ScanClient:
     timeout: float = 30.0
     api_key: str | None = None
 
-    def start_scan(self, repo_url: str, *, webhook_url: str | None = None) -> str:
+    def start_scan(self, repo: str, *, webhook_url: str | None = None) -> str:
         # interactive=False: this CLI has no resume command, so scans must run
         # to completion without pausing on clarify/gate prompts.
-        request_body: dict[str, Any] = {"repo_url": repo_url, "interactive": False}
+        # An http(s) value is cloned by the backend; anything else is treated
+        # as a server-side local path (requires ALLOWED_LOCAL_ROOTS there).
+        request_body: dict[str, Any] = {"interactive": False}
+        repo = repo.strip()
+        if _HTTP_URL.match(repo):
+            request_body["repo_url"] = repo
+        else:
+            request_body["repo_path"] = repo
         if webhook_url:
             request_body["webhook_url"] = webhook_url
 
@@ -122,6 +133,43 @@ class ScanClient:
                     raise TimeoutError(f"Report for scan {scan_id} was not ready in time")
                 time.sleep(interval)
 
+    def get_result(self, scan_id: str) -> dict[str, Any]:
+        """Fetch the structured CI result ({summary, problems, coverage}).
+
+        Raises ReportNotReady while the scan is still running. A finished
+        scan — including a failed one — is returned as-is so the caller can
+        gate CI on ``summary.exit_code``.
+        """
+        escaped_id = quote(scan_id, safe="")
+        response = self._request_json(
+            "GET",
+            f"/scan/{escaped_id}/result",
+            headers={"Accept": "application/json"},
+            expected_statuses={200, 202},
+        )
+        if not isinstance(response.data, dict):
+            raise ScanApiError("GET result response must be a JSON object")
+        if response.status == 202:
+            raise ReportNotReady(f"Result for scan {scan_id} is not ready yet")
+        return response.data
+
+    def wait_for_result(
+        self,
+        scan_id: str,
+        *,
+        interval: float = 5.0,
+        timeout: float | None = 600.0,
+    ) -> dict[str, Any]:
+        started_at = time.monotonic()
+
+        while True:
+            try:
+                return self.get_result(scan_id)
+            except ReportNotReady:
+                if timeout is not None and time.monotonic() - started_at >= timeout:
+                    raise TimeoutError(f"Result for scan {scan_id} was not ready in time")
+                time.sleep(interval)
+
     def save_report(self, scan_id: str, output: Path, *, wait: bool = False) -> Path:
         output.parent.mkdir(parents=True, exist_ok=True)
         report = self.wait_for_report(scan_id) if wait else self.get_report(scan_id)
@@ -184,8 +232,16 @@ class ScanClient:
 
 
 def default_report_path(scan_id: str) -> Path:
-    safe_name = "".join(char if char.isalnum() or char in "-_." else "_" for char in scan_id)
+    safe_name = _safe_name(scan_id)
     return Path(f"scan-report-{safe_name}.txt")
+
+
+def default_result_path(scan_id: str) -> Path:
+    return Path(f"scan-result-{_safe_name(scan_id)}.json")
+
+
+def _safe_name(scan_id: str) -> str:
+    return "".join(char if char.isalnum() or char in "-_." else "_" for char in scan_id)
 
 
 def _extract_scan_id(data: Any) -> str | None:

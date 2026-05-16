@@ -23,9 +23,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+# Бэкенд импортирует этот фасад вместо main.py, а load_dotenv() звал только
+# main.py. Без него OPENAI_*/MODEL не попадают в окружение процесса FastAPI и
+# LLM-фабрика (agentsec/llm.py) собирает клиент с пустым ключом и моделью по
+# умолчанию. Грузим .env из корня репозитория agentsec один раз при импорте.
+try:  # pragma: no cover - окружение без python-dotenv
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ModuleNotFoundError:
+    pass
+
 from .agents.orchestrator import interrupt_value, run_analysis
 from .config import CONFIG
 from .persistence.checkpointer import make_checkpointer
+from .reporting import findings_to_jsonable
 from .persistence.store import (
     STATUS_AWAITING_INPUT,
     STATUS_COMPLETED,
@@ -114,7 +126,9 @@ def _run(
                 interrupt_payload=pause,
             )
         else:
-            # Граф дошёл до END — фиксируем вердикт и отчёт.
+            # Граф дошёл до END — фиксируем вердикт, отчёт и структурные
+            # находки. Finding/Coverage — dataclass-ы; сериализуем их в
+            # список dict-ов, иначе SQLite-JSON получит str(dataclass).
             store.update_session(
                 session_id,
                 status=STATUS_COMPLETED,
@@ -122,6 +136,8 @@ def _run(
                 interrupt_payload=None,
                 verdict=state.get("verdict"),
                 report_md=state.get("report_md"),
+                findings=findings_to_jsonable(state.get("validated_findings") or []),
+                coverage=findings_to_jsonable(state.get("coverage") or []),
             )
     except Exception as err:  # noqa: BLE001 — падение прогона ≠ падение сервиса
         store.update_session(
@@ -134,11 +150,21 @@ def _run(
 
 # --- публичный API фасада ----------------------------------------------------
 
-def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
+def start_session(
+    task: str,
+    repo: str,
+    *,
+    interactive: bool = True,
+    session_id: str | None = None,
+) -> str:
     """Создаёт сессию, ставит скан в очередь и возвращает её id.
 
     Управление возвращается сразу: скан выполняется фоновым воркером.
     Клиент следит за прогрессом поллингом `get_session`.
+
+    `session_id` можно передать заранее — это позволяет вызывающему
+    (HTTP-бэкенду) привязать к нему артефакты до старта скана, например
+    каталог клонированного репозитория.
     """
     task = (task or "").strip()
     if not task:
@@ -146,7 +172,7 @@ def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
     if not Path(repo).expanduser().is_dir():
         raise ValueError(f"каталог репозитория не найден: {repo}")
 
-    session_id = uuid.uuid4().hex
+    session_id = session_id or uuid.uuid4().hex
     title = task[:60] + ("…" if len(task) > 60 else "")
     _get_store().create_session(SessionRecord(
         id=session_id, title=title, repo=repo, task=task,
