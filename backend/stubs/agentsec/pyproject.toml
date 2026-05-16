@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentsec"
+version = "0.0.0"
+description = "Development stub for hack4 API; replace with real agentsec (pip install -e path/to/agentsec)."
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
