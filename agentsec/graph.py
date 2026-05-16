@@ -26,6 +26,15 @@ from .agents.validator import make_validator_node
 from .config import CONFIG, elapsed
 from .index import index_repo
 from .index import query as Q
+from .index.model import (
+    SINK_COMMAND,
+    SINK_CRYPTO,
+    SINK_DESERIALIZE,
+    SINK_EVAL,
+    SINK_FILE,
+    SINK_SQL,
+    SINK_SSRF,
+)
 from .index.store import IndexStore, index_db_path
 from .llm import build_llm
 from .prompts import INTAKE_PROMPT
@@ -113,41 +122,77 @@ def _index(state: AnalysisState) -> dict:
         return {"repo_map_summary": {}}
 
 
+# Какие виды sink-ов и нужны ли точки входа каждому классу специалистов.
+_CLASS_SINK_KINDS: dict[str, tuple[str, ...]] = {
+    "injection": (SINK_SQL, SINK_COMMAND, SINK_EVAL, SINK_SSRF,
+                  SINK_DESERIALIZE, SINK_FILE),
+    "secrets": (SINK_CRYPTO,),
+    "authnz": (),
+}
+_CLASS_USES_ENTRYPOINTS = {"injection", "authnz"}
+
+
 def _repo_map_section() -> str:
-    """Текстовый дайджест Repo Map для контекста специалистов: точки
-    входа и sink-и с `file:line` — карта attack surface."""
+    """Краткий обзор Repo Map для recon: масштаб и счётчики attack surface.
+
+    Детальные списки не разворачиваем — их несёт пер-классовый бриф
+    кандидатов в задаче специалиста (экономия контекста)."""
     path = index_db_path(Path(CONFIG.analysis_root))
     if not path.exists():
         return ""
     store = IndexStore(path)
     try:
-        summary = Q.summary(store)
-        eps = Q.entry_points(store)
-        sinks = Q.sinks(store)
+        s = Q.summary(store)
     finally:
         store.close()
-    lines = [
-        "## Repo Map (индекс кодовой базы)",
-        f"Файлов: {summary['files']}, языки: {summary['languages']}, "
-        f"символов: {summary['symbols']}.",
-        "Запрашивай детали инструментами repo_overview / find_entry_points / "
-        "find_sinks / find_symbol / who_calls / file_symbols.",
-    ]
-    if eps:
-        lines.append(f"\nТочки входа (attack surface), {len(eps)} шт. — "
-                     "недоверенный ввод входит здесь:")
-        lines += [f"  {e['file']}:{e['line']} [{e['kind']}] {e['name']} "
-                  f"{e['detail']}".rstrip() for e in eps[:40]]
-        if len(eps) > 40:
-            lines.append(f"  ... ещё {len(eps) - 40} — см. find_entry_points")
-    if sinks:
-        lines.append(f"\nОпасные операции (sinks), {len(sinks)} шт. — "
-                     "кандидаты уязвимостей:")
-        lines += [f"  {s['file']}:{s['line']} [{s['kind']}] {s['snippet']}"
-                  for s in sinks[:60]]
-        if len(sinks) > 60:
-            lines.append(f"  ... ещё {len(sinks) - 60} — см. find_sinks")
-    return "\n".join(lines)
+    return (
+        "## Repo Map (индекс кодовой базы)\n"
+        f"Файлов: {s['files']}, языки: {s['languages']}, "
+        f"символов: {s['symbols']}.\n"
+        f"Attack surface: {s['entry_points']} точек входа, "
+        f"{s['sinks']} sink-ов по видам {s['sink_kinds']}.\n"
+        "Детали — инструментами repo_overview / find_entry_points / "
+        "find_sinks / find_symbol / who_calls / file_symbols."
+    )
+
+
+def _candidate_brief(vuln_class: str) -> tuple[str, int]:
+    """Список кандidatов класса из Repo Map для триажа специалистом.
+
+    Возвращает (текст брифа, всего кандидатов). Список обрезается бюджетом
+    `max_candidates_per_specialist` — остаток явно помечается непокрытым.
+    """
+    path = index_db_path(Path(CONFIG.analysis_root))
+    if not path.exists():
+        return "", 0
+    store = IndexStore(path)
+    try:
+        items: list[str] = []
+        for kind in _CLASS_SINK_KINDS.get(vuln_class, ()):
+            for s in Q.sinks(store, kind=kind):
+                items.append(f"  {s['file']}:{s['line']} [sink:{s['kind']}] "
+                             f"{s['snippet']}")
+        if vuln_class in _CLASS_USES_ENTRYPOINTS:
+            for e in Q.entry_points(store):
+                items.append(f"  {e['file']}:{e['line']} [entry:{e['kind']}] "
+                             f"{e['name']} {e['detail']}".rstrip())
+    finally:
+        store.close()
+
+    total = len(items)
+    if total == 0:
+        return "", 0
+    cap = CONFIG.max_candidates_per_specialist
+    lines = [f"## Кандидаты для триажа из Repo Map — всего {total}"]
+    lines += items[:cap]
+    if total > cap:
+        lines.append(f"  ... ещё {total - cap} кандидатов вне бюджета "
+                     f"({cap}) — добери через find_sinks / find_entry_points")
+    lines.append(
+        "Триаж: по КАЖДОМУ кандидату проверь достижимость недоверенного "
+        "ввода и подтверди уязвимость либо отклони (ложное срабатывание). "
+        "Затем добери то, что индекс мог пропустить.")
+    return "\n".join(lines), total
 
 
 def _clarify(state: AnalysisState) -> dict:
@@ -237,12 +282,14 @@ def _make_specialist_node(vuln_class: str, runner):
             f"Q: {c['question']}\nA: {c['answer']}"
             for c in state.get("clarifications", [])
         )
+        brief, n_candidates = _candidate_brief(vuln_class)
         task = (
             f"Задача пользователя: {state['task']}\n\n"
             f"{state.get('recon', '')}\n\n"
             + (f"Уточнения пользователя:\n{clar}\n\n" if clar else "")
             + ("Этот класс уязвимостей в приоритете задачи.\n"
                if focus else "")
+            + (f"{brief}\n\n" if brief else "")
             + "Проверь репозиторий на свой класс уязвимостей и верни "
               "markdown-отчёт строго по FINDING_FORMAT."
         )
@@ -266,7 +313,10 @@ def _make_specialist_node(vuln_class: str, runner):
                     f.evidence.setdefault("specialist_report", markdown[:2000])
                 return {
                     "raw_findings": findings,
-                    "coverage": [Coverage(area=vuln_class, status="done")],
+                    "coverage": [Coverage(
+                        area=vuln_class, status="done",
+                        note=f"кандидатов из Repo Map: {n_candidates}, "
+                             f"находок: {len(findings)}")],
                 }
             last_err = f"пустой отчёт ({len(markdown)} симв.)"
             _log(f"[{label}] попытка {attempt}: {last_err}, ретрай")
@@ -332,6 +382,7 @@ def _report(state: AnalysisState) -> dict:
         coverage=state.get("coverage", []),
         task=state.get("task", ""),
         repo=state.get("repo", ""),
+        repo_map=state.get("repo_map_summary") or {},
     )
     return {"report_md": report}
 

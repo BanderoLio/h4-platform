@@ -149,6 +149,45 @@ class RepoMapToolsTest(unittest.TestCase):
         self.assertIn("check_output", who_calls.invoke({"name": "check_output"}))
 
 
+class CandidateBriefTest(unittest.TestCase):
+    """Триаж-бриф: кандидаты класса из Repo Map в задаче специалиста."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved_root = CONFIG.analysis_root
+        self._saved_cap = CONFIG.max_candidates_per_specialist
+        CONFIG.analysis_root = _make_repo(self._tmp.name)
+        index_repo(CONFIG.analysis_root)[0].close()
+
+    def tearDown(self) -> None:
+        CONFIG.analysis_root = self._saved_root
+        CONFIG.max_candidates_per_specialist = self._saved_cap
+        self._tmp.cleanup()
+
+    def test_injection_brief_has_sinks_and_entrypoints(self):
+        from agentsec.graph import _candidate_brief
+        brief, total = _candidate_brief("injection")
+        self.assertGreater(total, 0)
+        self.assertIn("sink:sql", brief)
+        self.assertIn("sink:command", brief)
+        self.assertIn("entry:", brief)
+        self.assertIn("Триаж:", brief)
+
+    def test_authnz_brief_is_entrypoints_only(self):
+        from agentsec.graph import _candidate_brief
+        brief, total = _candidate_brief("authnz")
+        self.assertGreater(total, 0)
+        self.assertIn("/ping", brief)
+        self.assertNotIn("sink:", brief)
+
+    def test_budget_truncates_and_flags_remainder(self):
+        from agentsec.graph import _candidate_brief
+        CONFIG.max_candidates_per_specialist = 1
+        brief, total = _candidate_brief("injection")
+        self.assertGreater(total, 1)
+        self.assertIn("вне бюджета", brief)
+
+
 class ReadFileWindowTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
