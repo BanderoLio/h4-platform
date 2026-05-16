@@ -47,8 +47,11 @@ def run_semgrep(repo_root: Path, files: list[str], *,
     if not exe or not files:
         return []
     targets = files[:max_files]
-    cmd = [exe, "scan", "--config", "auto", "--json", "--quiet",
-           "--metrics", "off", "--timeout", "10", *targets]
+    # Курируемые security-паки: дают точные правила и, в отличие от
+    # `--config auto`, не требуют включённой телеметрии.
+    cmd = [exe, "scan", "--config", "p/security-audit", "--config", "p/secrets",
+           "--json", "--quiet", "--metrics", "off", "--timeout", "10",
+           *targets]
     try:
         result = subprocess.run(cmd, cwd=repo_root, capture_output=True,
                                 text=True, timeout=timeout, check=False)
