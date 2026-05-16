@@ -1,0 +1,36 @@
+services:
+  nextjs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    networks:
+      - web_network
+    env_file: .env
+    # No ports exposed here, only Nginx talks to it
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # Static/Media from Django (ensure backend also uses these volume names)
+      - django_static:/app/staticfiles:ro
+      - django_media:/app/media:ro
+    networks:
+      - web_network
+    depends_on:
+      - nextjs
+
+networks:
+  web_network:
+    external: true
+
+volumes:
+  django_static:
+    external: true
+  django_media:
+    external: true
