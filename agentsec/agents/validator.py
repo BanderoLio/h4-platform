@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -30,11 +31,28 @@ _VALID_STATUS = {STATUS_CONFIRMED, STATUS_LIKELY, STATUS_FALSE_POSITIVE}
 
 
 def _extract_json(text: str) -> dict:
-    """Достаёт первый JSON-объект из ответа LLM (модель иногда добавляет текст)."""
-    match = re.search(r"\{.*\}", text or "", re.S)
+    """Достаёт первый JSON-объект из ответа LLM.
+
+    Модель часто оборачивает JSON в markdown-блок ```json``` или
+    использует одинарные кавычки/висячие запятые — терпим всё это.
+    """
+    raw = text or ""
+    # Снимаем markdown-ограждение, если есть.
+    fence = re.search(r"```(?:json)?\s*(.*?)```", raw, re.S)
+    if fence:
+        raw = fence.group(1)
+    match = re.search(r"\{.*\}", raw, re.S)
     if not match:
         raise ValueError("в ответе валидатора нет JSON-объекта")
-    return json.loads(match.group(0))
+    blob = match.group(0)
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        # Терпимый разбор: одинарные кавычки → двойные, срез висячих запятых.
+        repaired = re.sub(r",(\s*[}\]])", r"\1", blob)
+        if "'" in repaired and '"' not in repaired:
+            repaired = repaired.replace("'", '"')
+        return json.loads(repaired)
 
 
 def _evidence_view(finding: Finding) -> str:
@@ -64,12 +82,32 @@ def make_validator_node():
     # файлов и вывод, длинная петля здесь не нужна и опасна.
     run_cfg = {"recursion_limit": CONFIG.validator_recursion_limit}
 
+    def _invoke_bounded(finding: Finding):
+        """Гоняет ReAct-агента валидатора в daemon-потоке с таймаутом —
+        одна зависшая проверка не должна держать весь узел `validate`."""
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                box["result"] = agent.invoke(
+                    {"messages": [("user", _evidence_view(finding))]}, run_cfg)
+            except Exception as err:  # noqa: BLE001
+                box["error"] = err
+
+        worker = threading.Thread(target=_work, daemon=True)
+        worker.start()
+        worker.join(CONFIG.validator_timeout_sec)
+        if worker.is_alive():
+            raise TimeoutError(
+                f"проверка не уложилась в {CONFIG.validator_timeout_sec}с")
+        if "error" in box:
+            raise box["error"]
+        return box["result"]
+
     def _validate_one(finding: Finding) -> Finding:
         t0 = time.perf_counter()
         try:
-            result = agent.invoke(
-                {"messages": [("user", _evidence_view(finding))]}, run_cfg
-            )
+            result = _invoke_bounded(finding)
             verdict = _extract_json(result["messages"][-1].content)
         except Exception as err:  # noqa: BLE001 — сбой валидатора не роняет граф
             # Не смогли проверить — оставляем как unverified, фиксируем причину.

@@ -86,34 +86,62 @@ def _read_slice(file: str, start: int, end: int) -> str:
     return out
 
 
-def _gather(vuln_class: str) -> list[dict]:
-    """Собирает кандидатов класса из Repo Map: sink-и нужных видов +
-    точки входа, каждому прикладывает срез кода функции-владельца."""
+# Приоритизация кандидатов: риск вида sink-а и вес роли файла. Бюджет
+# триажа маленький — на большом репо важно смотреть рискованное вперёд,
+# а не первые-60 по алфавиту.
+_KIND_RISK = {
+    SINK_SQL: 3.0, SINK_COMMAND: 3.0, SINK_EVAL: 3.0, SINK_DESERIALIZE: 3.0,
+    SINK_SSRF: 2.0, SINK_SECRET: 2.0, SINK_FILE: 2.0, SINK_CRYPTO: 1.0,
+}
+_ENTRY_RISK = 2.5    # точка входа — это attack surface
+_ROLE_WEIGHT = {"source": 1.0, "config": 0.6, "other": 0.5,
+                "test": 0.2, "docs": 0.1, "generated": 0.0, "vendor": 0.0}
+
+
+def _gather(vuln_class: str) -> tuple[list[dict], int]:
+    """Собирает кандидатов класса из Repo Map, ранжирует по риску и
+    отбирает топ под бюджет, срезает код только для отобранных.
+
+    Возвращает (отобранные кандидаты, всего кандидатов до отсечки).
+    """
     path = index_db_path(CONFIG.analysis_root)
     if not path.exists():
-        return []
+        return [], 0
     store = IndexStore(path)
     raw: list[dict] = []
     try:
-        # Сгенерированный/вендоренный код — не цель аудита и источник
-        # мусорных кандидатов (минифицированные бандлы и т.п.).
-        skip_files = {f["path"] for f in Q.find_files(store, role="generated")}
-        skip_files |= {f["path"] for f in Q.find_files(store, role="vendor")}
+        roles = {f["path"]: f["role"] for f in Q.find_files(store)}
+        # Сгенерированный/вендоренный код — не цель аудита.
+        skip = {p for p, r in roles.items() if r in ("generated", "vendor")}
         for kind in CLASS_SINK_KINDS.get(vuln_class, ()):
             for s in Q.sinks(store, kind=kind):
-                if s["file"] in skip_files:
+                if s["file"] in skip:
                     continue
                 raw.append({"kind": f"sink:{s['kind']}", "file": s["file"],
-                            "line": s["line"], "detail": s["snippet"]})
+                            "line": s["line"], "detail": s["snippet"],
+                            "_risk": _KIND_RISK.get(s["kind"], 1.0)})
         if vuln_class in CLASS_USES_ENTRYPOINTS:
             for e in Q.entry_points(store):
-                if e["file"] in skip_files:
+                if e["file"] in skip:
                     continue
                 raw.append({"kind": f"entry:{e['kind']}", "file": e["file"],
                             "line": e["line"],
-                            "detail": f"{e['name']} {e['detail']}".strip()})
-        # Срез кода — детерминированно, по функции-владельцу из индекса.
-        for cand in raw:
+                            "detail": f"{e['name']} {e['detail']}".strip(),
+                            "_risk": _ENTRY_RISK})
+        # Находки semgrep НЕ идут в триаж: semgrep — доверенный источник,
+        # его находки граф включает напрямую (узел scanner_findings),
+        # минуя скептичный LLM-триаж. Триаж работает по regex-кандидатам.
+        # Скоринг = риск вида × вес роли; стабильная сортировка по убыванию
+        # сохраняет порядок file/line внутри одного балла.
+        for c in raw:
+            weight = _ROLE_WEIGHT.get(roles.get(c["file"], "other"), 0.5)
+            c["_score"] = c["_risk"] * weight
+        raw.sort(key=lambda c: c["_score"], reverse=True)
+        total = len(raw)
+        selected = raw[:CONFIG.max_candidates_per_specialist]
+        # Срез кода — только для отобранных (на большом репо не читаем
+        # все 800+ файлов-кандидатов, а лишь топ-60).
+        for cand in selected:
             sym = Q.enclosing_symbol(store, cand["file"], cand["line"])
             if sym:
                 cand["code"] = _read_slice(cand["file"], sym["line"],
@@ -126,7 +154,7 @@ def _gather(vuln_class: str) -> list[dict]:
                 cand["scope"] = "<module>"
     finally:
         store.close()
-    return raw
+    return selected, total
 
 
 def _extract_json_array(text: str) -> list:
@@ -235,14 +263,13 @@ def triage_specialist(vuln_class: str, task: str) -> dict:
     инкрементальный: по исчерпании `triage_budget_sec` цикл прерывается,
     накопленные находки сохраняются, в coverage честно пишется N из M.
     """
-    candidates = _gather(vuln_class)
-    total = len(candidates)
+    # _gather ранжирует по риску и возвращает топ под бюджет + общий счёт.
+    selected, total = _gather(vuln_class)
     if total == 0:
         return {"coverage": [Coverage(
             area=vuln_class, status="gap",
             note="кандидатов в Repo Map не найдено")]}
 
-    selected = candidates[:CONFIG.max_candidates_per_specialist]
     llm = build_llm()
     deadline = time.monotonic() + CONFIG.triage_budget_sec
     findings: list[Finding] = []
