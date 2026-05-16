@@ -90,7 +90,9 @@ class CliTests(unittest.TestCase):
                 exit_code = main(["--base-url", "http://api.test", "--timeout", "9"])
 
         self.assertEqual(exit_code, 0)
-        interactive.assert_called_once_with(initial_base_url="http://api.test", initial_timeout=9)
+        interactive.assert_called_once_with(
+            initial_base_url="http://api.test", initial_timeout=9, initial_api_key=None
+        )
 
 
 if __name__ == "__main__":

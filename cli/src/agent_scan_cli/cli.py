@@ -79,7 +79,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command is None:
         if sys.stdin.isatty():
-            return run_interactive(initial_base_url=args.base_url, initial_timeout=args.timeout)
+            return run_interactive(
+                initial_base_url=args.base_url,
+                initial_timeout=args.timeout,
+                initial_api_key=args.api_key,
+            )
         parser.print_help()
         return 0
 
@@ -90,15 +94,17 @@ def run_interactive(
     *,
     initial_base_url: str | None = None,
     initial_timeout: float = 30.0,
+    initial_api_key: str | None = None,
 ) -> int:
     return InteractiveApp(
         initial_base_url=initial_base_url,
         initial_timeout=initial_timeout,
+        initial_api_key=initial_api_key,
     ).run()
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    client = ScanClient(base_url=args.base_url, timeout=args.timeout)
+    client = ScanClient(base_url=args.base_url, timeout=args.timeout, api_key=args.api_key)
 
     try:
         if args.command == "start":
@@ -153,6 +159,7 @@ def _run_command(args: argparse.Namespace) -> int:
 def _add_connection_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
     default = argparse.SUPPRESS if suppress_defaults else os.getenv("SCAN_API_URL", DEFAULT_BASE_URL)
     timeout_default = argparse.SUPPRESS if suppress_defaults else 30.0
+    api_key_default = argparse.SUPPRESS if suppress_defaults else os.getenv("SCAN_API_KEY")
     parser.add_argument(
         "--base-url",
         default=default,
@@ -163,6 +170,11 @@ def _add_connection_options(parser: argparse.ArgumentParser, *, suppress_default
         type=float,
         default=timeout_default,
         help="HTTP timeout in seconds.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=api_key_default,
+        help="Bearer key for the scan API. Defaults to the SCAN_API_KEY environment variable.",
     )
 
 
