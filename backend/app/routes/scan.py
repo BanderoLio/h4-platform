@@ -1,9 +1,21 @@
+import shutil
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from git import GitCommandError, Repo
 from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 
 from app.auth import require_api_key
+from app.config import settings
 from app.repo_url_validation import validate_worker_fetch_url
+
+_repo_root = Path(__file__).resolve().parents[3]
+if str(_repo_root) not in sys.path:
+    sys.path.append(str(_repo_root))
 
 try:
     from agentsec.session import get_session, list_sessions, resume_session, start_session
@@ -110,13 +122,37 @@ def _load_session_or_404(scan_id: str) -> dict | object:
     return session
 
 
+def _materialize_repo(repo_url: str) -> str:
+    base_dir = Path(settings.repos_dir) / "session_sources"
+    try:
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Local dev often uses docker-oriented REPOS_DIR=/data/repos (not writable on host).
+        # Fallback keeps API usable without forcing immediate env changes.
+        base_dir = Path(tempfile.gettempdir()) / "hack4" / "session_sources"
+        base_dir.mkdir(parents=True, exist_ok=True)
+    repo_path = base_dir / uuid.uuid4().hex
+    try:
+        Repo.clone_from(repo_url, repo_path)
+    except GitCommandError as exc:
+        shutil.rmtree(repo_path, ignore_errors=True)
+        raise HTTPException(status_code=422, detail=f"failed to clone repository: {exc}")
+    except Exception:
+        shutil.rmtree(repo_path, ignore_errors=True)
+        raise HTTPException(status_code=503, detail="Failed to prepare repository for scan")
+    return str(repo_path)
+
+
 @router.post("/start", status_code=202, response_model=StartScanResponse)
 async def start_scan(body: StartScanRequest):
     _require_session_api()
     repo_url = str(body.repo_url)
     task = body.query or f"Security scan for repository {repo_url}"
+    local_repo_path = _materialize_repo(repo_url)
     try:
-        session_id = start_session(task=task, repo=repo_url, interactive=body.interactive)
+        session_id = start_session(task=task, repo=local_repo_path, interactive=body.interactive)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception:
         raise HTTPException(status_code=503, detail="Session backend unavailable")
     return StartScanResponse(scan_id=session_id)
