@@ -110,6 +110,14 @@ class TriageTest(unittest.TestCase):
         out = self.triage.triage_specialist("injection", "аудит")
         self.assertGreaterEqual(len(out["raw_findings"]), 1)  # не пусто
 
+    def test_read_slice_caps_minified_line(self):
+        # Минифицированный файл (весь бандл в одной строке) не должен
+        # раздувать срез — иначе промпт батча уходит в ~1M токенов.
+        (CONFIG.analysis_root / "bundle.min.js").write_text(
+            "var x=" + "a" * 2_000_000 + ";", encoding="utf-8")
+        sliced = self.triage._read_slice("bundle.min.js", 1, 1)
+        self.assertLess(len(sliced), 7000)
+
     def test_extract_json_array(self):
         self.assertEqual(self.triage._extract_json_array("шум [1,2] хвост"),
                          [1, 2])

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 
 from ..config import CONFIG, elapsed
@@ -55,12 +56,20 @@ _CLASS_DESC = {
 }
 
 # Сколько строк кода-контекста вокруг кандидата подаётся в LLM.
-_SLICE_MAX_LINES = 140
+_SLICE_MAX_LINES = 120
 _WINDOW = 30  # окно вокруг строки, если у кандидата нет функции-владельца
+# Жёсткие лимиты размера среза. Без них одна строка минифицированного
+# бандла (вся в одну строку) раздувала промпт батча до ~1M токенов.
+_SLICE_MAX_CHARS = 6000
+_LINE_MAX_CHARS = 400
 
 
 def _read_slice(file: str, start: int, end: int) -> str:
-    """Вырезает диапазон строк файла с нумерацией (для контекста LLM)."""
+    """Вырезает диапазон строк файла с нумерацией (для контекста LLM).
+
+    Срез ограничен и по строкам, и по символам: минифицированный файл,
+    где весь бандл в одной строке, иначе разнёс бы промпт батча.
+    """
     path = CONFIG.analysis_root / file
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -70,7 +79,11 @@ def _read_slice(file: str, start: int, end: int) -> str:
     end = min(len(lines), end)
     if end - start + 1 > _SLICE_MAX_LINES:
         end = start + _SLICE_MAX_LINES - 1
-    return "\n".join(f"{i}\t{lines[i - 1]}" for i in range(start, end + 1))
+    out = "\n".join(f"{i}\t{lines[i - 1][:_LINE_MAX_CHARS]}"
+                    for i in range(start, end + 1))
+    if len(out) > _SLICE_MAX_CHARS:
+        out = out[:_SLICE_MAX_CHARS] + "\n... [срез обрезан по размеру]"
+    return out
 
 
 def _gather(vuln_class: str) -> list[dict]:
@@ -82,12 +95,20 @@ def _gather(vuln_class: str) -> list[dict]:
     store = IndexStore(path)
     raw: list[dict] = []
     try:
+        # Сгенерированный/вендоренный код — не цель аудита и источник
+        # мусорных кандидатов (минифицированные бандлы и т.п.).
+        skip_files = {f["path"] for f in Q.find_files(store, role="generated")}
+        skip_files |= {f["path"] for f in Q.find_files(store, role="vendor")}
         for kind in CLASS_SINK_KINDS.get(vuln_class, ()):
             for s in Q.sinks(store, kind=kind):
+                if s["file"] in skip_files:
+                    continue
                 raw.append({"kind": f"sink:{s['kind']}", "file": s["file"],
                             "line": s["line"], "detail": s["snippet"]})
         if vuln_class in CLASS_USES_ENTRYPOINTS:
             for e in Q.entry_points(store):
+                if e["file"] in skip_files:
+                    continue
                 raw.append({"kind": f"entry:{e['kind']}", "file": e["file"],
                             "line": e["line"],
                             "detail": f"{e['name']} {e['detail']}".strip()})
@@ -186,6 +207,27 @@ def _chunks(items: list, size: int):
         yield items[i:i + size]
 
 
+def _run_bounded(fn, timeout: float):
+    """Выполняет fn() в daemon-потоке с жёстким лимитом времени.
+
+    Возвращает результат, [] при ошибке, None при таймауте. Страховка от
+    патологического батча, который иначе игнорировал бы бюджет триажа."""
+    box: dict = {}
+
+    def _work() -> None:
+        try:
+            box["result"] = fn()
+        except Exception:  # noqa: BLE001
+            box["result"] = []
+
+    worker = threading.Thread(target=_work, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return None
+    return box.get("result", [])
+
+
 def triage_specialist(vuln_class: str, task: str) -> dict:
     """Триажит кандидатов класса батчами с бюджетом времени.
 
@@ -214,8 +256,16 @@ def triage_specialist(vuln_class: str, task: str) -> dict:
             print(f"[+{elapsed()}]     .. триаж [{vuln_class}]: бюджет "
                   f"{CONFIG.triage_budget_sec}с исчерпан, останавливаюсь")
             break
-        # Результат батча коммитится сразу — это и есть инкрементальность.
-        findings += _triage_batch(llm, vuln_class, task, batch)
+        # Батч под жёстким таймаутом; результат коммитится сразу — это и
+        # есть инкрементальность (накопленное переживёт остановку цикла).
+        result = _run_bounded(
+            lambda b=batch: _triage_batch(llm, vuln_class, task, b),
+            CONFIG.triage_batch_timeout_sec)
+        if result is None:
+            print(f"[+{elapsed()}]     .. триаж [{vuln_class}]: батч "
+                  f"превысил {CONFIG.triage_batch_timeout_sec}с — пропущен")
+        else:
+            findings += result
         triaged += len(batch)
 
     dt = time.perf_counter() - t0
