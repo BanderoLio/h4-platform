@@ -80,12 +80,16 @@ class TriageTest(unittest.TestCase):
         self.triage.build_llm = self._saved_llm
         self._tmp.cleanup()
 
-    def test_gather_returns_candidates_with_code(self):
-        cands = self.triage._gather("injection")
-        self.assertGreaterEqual(len(cands), 5)          # 5 sql sink-ов + точка входа
+    def test_gather_returns_ranked_candidates_with_code(self):
+        cands, total = self.triage._gather("injection")
+        self.assertGreaterEqual(total, 5)               # 5 sql sink-ов + точка входа
+        self.assertGreaterEqual(len(cands), 5)
         self.assertTrue(all("code" in c and c["code"] for c in cands))
         self.assertTrue(any(c["kind"] == "sink:sql" for c in cands))
         self.assertTrue(any(c["kind"].startswith("entry:") for c in cands))
+        # Кандидаты отсортированы по убыванию приоритета.
+        scores = [c["_score"] for c in cands]
+        self.assertEqual(scores, sorted(scores, reverse=True))
 
     def test_triage_returns_findings_and_done(self):
         self.triage.build_llm = lambda *a, **k: _StubLLM()
