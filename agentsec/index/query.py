@@ -90,6 +90,17 @@ def file_outline(store: IndexStore, path: str) -> list[dict[str, Any]]:
                         "WHERE file = ? ORDER BY line", (path,))
 
 
+def scanner_findings(store: IndexStore,
+                     vuln_class: str | None = None) -> list[dict[str, Any]]:
+    """Находки детерминистических сканеров (semgrep/…). Опционально —
+    фильтр по классу уязвимостей."""
+    if vuln_class:
+        return _rows(store, "SELECT * FROM scanner_findings "
+                            "WHERE vuln_class = ? ORDER BY file, line",
+                     (vuln_class,))
+    return _rows(store, "SELECT * FROM scanner_findings ORDER BY file, line")
+
+
 def enclosing_symbol(store: IndexStore, file: str,
                      line: int) -> dict[str, Any] | None:
     """Самый вложенный символ файла, охватывающий строку (для среза кода)."""

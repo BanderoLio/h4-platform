@@ -110,17 +110,46 @@ def _index(state: AnalysisState) -> dict:
     try:
         store, stats = index_repo(Path(CONFIG.analysis_root))
         summary = Q.summary(store)
-        store.close()
         _log(f"[index] Repo Map: {summary['files']} файлов, "
              f"{summary['symbols']} символов, "
              f"{summary['entry_points']} точек входа, "
              f"{summary['sinks']} sink-ов "
              f"(переиндексировано {stats['indexed']}, "
              f"переиспользовано {stats['reused']})")
+        _run_scanner_ingest(store, summary.get("commit", ""))
+        store.close()
         return {"repo_map_summary": summary}
     except Exception as err:  # noqa: BLE001 — индексация не критична для прогона
         _log(f"[index] индексация не удалась: {err}")
         return {"repo_map_summary": {}}
+
+
+def _run_scanner_ingest(store, commit: str) -> None:
+    """Прогоняет semgrep по файлам-кандидатам и кладёт находки в индекс.
+
+    Это источник ТОЧНЫХ кандидатов триажа (в отличие от regex-эвристики).
+    Кэш по git-commit: повторный прогон того же коммита не пересканирует.
+    Сбой/отсутствие semgrep — пайплайн продолжает на regex-кандидатах.
+    """
+    if not CONFIG.index_scanners:
+        return
+    from .index.scan import run_semgrep, semgrep_available
+
+    if not semgrep_available():
+        _log("[index] semgrep не установлен — кандидаты только из Repo Map")
+        return
+    if commit and store.get_meta("scanner_commit") == commit \
+            and store.query("SELECT 1 FROM scanner_findings LIMIT 1"):
+        _log("[index] находки сканеров взяты из кэша (commit не изменился)")
+        return
+    targets = store.candidate_files()
+    _log(f"[index] semgrep по {len(targets)} файлам-кандидатам "
+         f"(лимит {CONFIG.scanner_timeout_sec}с)")
+    findings = run_semgrep(Path(CONFIG.analysis_root), targets,
+                           timeout=CONFIG.scanner_timeout_sec)
+    store.replace_scanner_findings(findings)
+    store.set_meta(scanner_commit=commit or "")
+    _log(f"[index] semgrep: {len(findings)} находок-кандидатов")
 
 
 # Какие виды sink-ов и нужны ли точки входа каждому классу специалистов.

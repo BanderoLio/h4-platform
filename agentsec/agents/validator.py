@@ -30,11 +30,28 @@ _VALID_STATUS = {STATUS_CONFIRMED, STATUS_LIKELY, STATUS_FALSE_POSITIVE}
 
 
 def _extract_json(text: str) -> dict:
-    """Достаёт первый JSON-объект из ответа LLM (модель иногда добавляет текст)."""
-    match = re.search(r"\{.*\}", text or "", re.S)
+    """Достаёт первый JSON-объект из ответа LLM.
+
+    Модель часто оборачивает JSON в markdown-блок ```json``` или
+    использует одинарные кавычки/висячие запятые — терпим всё это.
+    """
+    raw = text or ""
+    # Снимаем markdown-ограждение, если есть.
+    fence = re.search(r"```(?:json)?\s*(.*?)```", raw, re.S)
+    if fence:
+        raw = fence.group(1)
+    match = re.search(r"\{.*\}", raw, re.S)
     if not match:
         raise ValueError("в ответе валидатора нет JSON-объекта")
-    return json.loads(match.group(0))
+    blob = match.group(0)
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        # Терпимый разбор: одинарные кавычки → двойные, срез висячих запятых.
+        repaired = re.sub(r",(\s*[}\]])", r"\1", blob)
+        if "'" in repaired and '"' not in repaired:
+            repaired = repaired.replace("'", '"')
+        return json.loads(repaired)
 
 
 def _evidence_view(finding: Finding) -> str:

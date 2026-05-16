@@ -27,11 +27,15 @@ CREATE TABLE IF NOT EXISTS entry_points (
     kind TEXT, name TEXT, file TEXT, line INTEGER, detail TEXT);
 CREATE TABLE IF NOT EXISTS sinks (
     kind TEXT, file TEXT, line INTEGER, snippet TEXT);
+CREATE TABLE IF NOT EXISTS scanner_findings (
+    tool TEXT, rule TEXT, vuln_class TEXT, file TEXT,
+    line INTEGER, severity TEXT, message TEXT);
 CREATE INDEX IF NOT EXISTS idx_sym_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_sym_file ON symbols(file);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee);
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
 CREATE INDEX IF NOT EXISTS idx_sinks_kind ON sinks(kind);
+CREATE INDEX IF NOT EXISTS idx_scan_class ON scanner_findings(vuln_class);
 """
 
 
@@ -110,6 +114,27 @@ class IndexStore:
             row = self._conn.execute(
                 "SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
+
+    # --- находки сканеров ----------------------------------------------------
+
+    def candidate_files(self) -> list[str]:
+        """Файлы, где индекс нашёл sink-и или точки входа — поверхность для
+        прицельного прогона сканеров."""
+        rows = self.query(
+            "SELECT file FROM sinks UNION SELECT file FROM entry_points")
+        return sorted(r["file"] for r in rows)
+
+    def replace_scanner_findings(self, rows: list[dict]) -> None:
+        """Полностью перезаписывает таблицу находок сканеров."""
+        with self._lock:
+            self._conn.execute("DELETE FROM scanner_findings")
+            self._conn.executemany(
+                "INSERT INTO scanner_findings VALUES (?,?,?,?,?,?,?)",
+                [(r.get("tool", ""), r.get("rule", ""),
+                  r.get("vuln_class", ""), r.get("file", ""),
+                  r.get("line", 0), r.get("severity", ""),
+                  r.get("message", "")) for r in rows])
+            self._conn.commit()
 
     # --- чтение --------------------------------------------------------------
 

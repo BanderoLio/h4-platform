@@ -93,7 +93,8 @@ _KIND_RISK = {
     SINK_SQL: 3.0, SINK_COMMAND: 3.0, SINK_EVAL: 3.0, SINK_DESERIALIZE: 3.0,
     SINK_SSRF: 2.0, SINK_SECRET: 2.0, SINK_FILE: 2.0, SINK_CRYPTO: 1.0,
 }
-_ENTRY_RISK = 2.5  # точка входа — это attack surface
+_ENTRY_RISK = 2.5    # точка входа — это attack surface
+_SCANNER_RISK = 4.0  # находка semgrep точнее regex-эвристики — выше всех
 _ROLE_WEIGHT = {"source": 1.0, "config": 0.6, "other": 0.5,
                 "test": 0.2, "docs": 0.1, "generated": 0.0, "vendor": 0.0}
 
@@ -128,6 +129,16 @@ def _gather(vuln_class: str) -> tuple[list[dict], int]:
                             "line": e["line"],
                             "detail": f"{e['name']} {e['detail']}".strip(),
                             "_risk": _ENTRY_RISK})
+        # Находки сканеров (semgrep) — точные кандидаты с dataflow, риск
+        # выше regex-эвристики: триаж смотрит их первыми.
+        for sf in Q.scanner_findings(store, vuln_class):
+            if sf["file"] in skip:
+                continue
+            rule = (sf["rule"] or "rule").split(".")[-1][:48]
+            raw.append({"kind": f"{sf['tool']}:{rule}", "file": sf["file"],
+                        "line": sf["line"],
+                        "detail": f"[{sf['severity']}] {sf['message']}",
+                        "_risk": _SCANNER_RISK})
         # Скоринг = риск вида × вес роли; стабильная сортировка по убыванию
         # сохраняет порядок file/line внутри одного балла.
         for c in raw:
