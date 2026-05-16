@@ -34,7 +34,7 @@ class TestGraphStructure(unittest.TestCase):
         nodes = set(compiled.nodes)
         for expected in (
             "intake", "clarify", "recon", "consolidate",
-            "validate", "gate", "report",
+            "validate", "gate", "report", "patches",
             "specialist_injection", "specialist_secrets", "specialist_authnz",
         ):
             self.assertIn(expected, nodes)
@@ -176,6 +176,38 @@ class TestReport(unittest.TestCase):
         out = G._report(state)
         self.assertIn("# Отчёт анализа безопасности", out["report_md"])
         self.assertIn("F-001", out["report_md"])
+
+
+class TestPatches(unittest.TestCase):
+    def setUp(self) -> None:
+        self._enabled = CONFIG.generate_fix_patches
+        self._gen = G.generate_fix_patches
+
+    def tearDown(self) -> None:
+        CONFIG.generate_fix_patches = self._enabled
+        G.generate_fix_patches = self._gen
+
+    def test_patches_disabled_returns_empty(self):
+        CONFIG.generate_fix_patches = False
+        out = G._patches({"validated_findings": []})
+        self.assertEqual(out["fix_patches"], [])
+
+    def test_patches_node_uses_generator_output(self):
+        CONFIG.generate_fix_patches = True
+        G.generate_fix_patches = lambda **_: [{
+            "finding_id": "F-001",
+            "title": "SQLi",
+            "unified_diff": "--- a/app.py\n+++ b/app.py\n@@\n-x\n+y\n",
+        }]
+        out = G._patches({
+            "validated_findings": [
+                Finding(id="F-001", title="SQLi", severity="High",
+                        status=STATUS_CONFIRMED),
+            ],
+            "repo": "/tmp/x",
+        })
+        self.assertEqual(len(out["fix_patches"]), 1)
+        self.assertIn("unified_diff", out["fix_patches"][0])
 
 
 if __name__ == "__main__":

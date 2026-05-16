@@ -9,6 +9,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .patching import render_fix_patches_diff, render_fix_patches_markdown
+
 
 def _slug(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-")
@@ -169,6 +171,7 @@ def save_report(
     scanner_outputs: dict[str, str] | None = None,
     verdict: dict[str, Any] | None = None,
     coverage: list[Any] | None = None,
+    fix_patches: list[dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
     """Save a report in requested formats and return generated paths."""
     selected = {fmt.lower() for fmt in (formats or ["md", "json"])}
@@ -178,6 +181,7 @@ def save_report(
     base = _slug(f"{Path(repo).name if repo else 'repo'}-{stamp}")
     paths: dict[str, Path] = {}
     jsonable_findings = findings_to_jsonable(findings, markdown)
+    patches = list(fix_patches or [])
     payload = {
         "metadata": {
             "task": task,
@@ -188,6 +192,7 @@ def save_report(
         "verdict": verdict or {},
         "findings": jsonable_findings,
         "coverage": [_finding_to_dict(c) for c in (coverage or [])],
+        "fix_patches": patches,
         "scanner_outputs": scanner_outputs or {},
         "markdown": markdown,
     }
@@ -203,4 +208,13 @@ def save_report(
         path = out_dir / f"{base}.html"
         path.write_text(_html_report(markdown, payload), encoding="utf-8")
         paths["html"] = path
+    if patches:
+        path = out_dir / f"{base}.patches.md"
+        path.write_text(render_fix_patches_markdown(patches), encoding="utf-8")
+        paths["patches_markdown"] = path
+        diff_bundle = render_fix_patches_diff(patches)
+        if diff_bundle:
+            path = out_dir / f"{base}.patches.diff"
+            path.write_text(diff_bundle, encoding="utf-8")
+            paths["patches_diff"] = path
     return paths
