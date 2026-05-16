@@ -66,6 +66,9 @@ class Config:
     validator_max_workers: int = 4
     # Лимит шагов ReAct-агента валидатора на одну находку (защита от петель).
     validator_recursion_limit: int = 18
+    # Жёсткий лимит времени на проверку одной находки (сек) — зависшая
+    # проверка не должна держать весь узел validate.
+    validator_timeout_sec: int = 120
 
     # --- quality gate ---
     # Severity, при которых подтверждённая находка блокирует сборку.

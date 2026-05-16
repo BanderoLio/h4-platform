@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -81,12 +82,32 @@ def make_validator_node():
     # файлов и вывод, длинная петля здесь не нужна и опасна.
     run_cfg = {"recursion_limit": CONFIG.validator_recursion_limit}
 
+    def _invoke_bounded(finding: Finding):
+        """Гоняет ReAct-агента валидатора в daemon-потоке с таймаутом —
+        одна зависшая проверка не должна держать весь узел `validate`."""
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                box["result"] = agent.invoke(
+                    {"messages": [("user", _evidence_view(finding))]}, run_cfg)
+            except Exception as err:  # noqa: BLE001
+                box["error"] = err
+
+        worker = threading.Thread(target=_work, daemon=True)
+        worker.start()
+        worker.join(CONFIG.validator_timeout_sec)
+        if worker.is_alive():
+            raise TimeoutError(
+                f"проверка не уложилась в {CONFIG.validator_timeout_sec}с")
+        if "error" in box:
+            raise box["error"]
+        return box["result"]
+
     def _validate_one(finding: Finding) -> Finding:
         t0 = time.perf_counter()
         try:
-            result = agent.invoke(
-                {"messages": [("user", _evidence_view(finding))]}, run_cfg
-            )
+            result = _invoke_bounded(finding)
             verdict = _extract_json(result["messages"][-1].content)
         except Exception as err:  # noqa: BLE001 — сбой валидатора не роняет граф
             # Не смогли проверить — оставляем как unverified, фиксируем причину.
