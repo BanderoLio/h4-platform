@@ -1,7 +1,7 @@
 """Сквозной smoke-тест графа на стаб-LLM.
 
 Прогоняет весь граф (intake → recon → специалисты → consolidate →
-validate → gate → report) БЕЗ сети: LLM, миньоны и специалисты
+validate → gate → report → patches) БЕЗ сети: LLM, миньоны и специалисты
 подменены. Ловит регрессии в проводке узлов и состоянии.
 """
 from __future__ import annotations
@@ -80,6 +80,7 @@ class GraphSmokeTest(unittest.TestCase):
             self.assertIn(cls, areas)
         # Стаб-специалисты находок не дали.
         self.assertEqual(final.get("validated_findings", []), [])
+        self.assertEqual(final.get("fix_patches", []), [])
 
 
 if __name__ == "__main__":

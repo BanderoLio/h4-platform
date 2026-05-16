@@ -40,6 +40,12 @@ class Config:
     validator_max_workers: int = 4
     # Лимит шагов ReAct-агента валидатора на одну находку (защита от петель).
     validator_recursion_limit: int = 18
+    # Генерировать кандидатные патчи после сборки отчёта.
+    generate_fix_patches: bool = True
+    # Максимум находок, для которых строятся патчи за один прогон.
+    patch_max_findings: int = 8
+    # Радиус строк контекста вокруг уязвимости для patch-генератора.
+    patch_context_radius: int = 25
 
     # --- quality gate ---
     # Severity, при которых подтверждённая находка блокирует сборку.

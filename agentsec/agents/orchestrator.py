@@ -1,7 +1,7 @@
 """Оркестратор системы — тонкая обёртка над детерминированным графом.
 
 Управление потоком вынесено в `agentsec.graph` (StateGraph): recon →
-параллельные специалисты → consolidate → validate → gate → report.
+параллельные специалисты → consolidate → validate → gate → report → patches.
 Здесь — только запуск/возобновление графа и возврат итогового состояния.
 
 Два режима вызова:
@@ -33,10 +33,10 @@ def run_analysis(
     """Запускает или возобновляет анализ, возвращает состояние графа.
 
     В состоянии: `report_md` (итоговый markdown), `validated_findings`
-    (структурные `Finding`), `verdict` (результат quality gate),
-    `coverage` (что проанализировано, где пробелы). Если граф встал на
-    паузу `interrupt()`, в состоянии будет ключ `__interrupt__` — см.
-    `interrupt_value()`.
+    (структурные `Finding`), `fix_patches` (candidate unified diff),
+    `verdict` (результат quality gate), `coverage` (что проанализировано,
+    где пробелы). Если граф встал на паузу `interrupt()`, в состоянии будет
+    ключ `__interrupt__` — см. `interrupt_value()`.
     """
     graph = build_graph(checkpointer=checkpointer)
     # recursion_limit с запасом: граф плоский, но specialist-узлы внутри

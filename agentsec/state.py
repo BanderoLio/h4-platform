@@ -40,3 +40,4 @@ class AnalysisState(TypedDict, total=False):
     # --- gate / report ---
     verdict: dict[str, Any]          # результат compute_verdict + решение gate
     report_md: str                   # итоговый markdown-отчёт
+    fix_patches: list[dict[str, Any]]  # candidate-патчи после отчёта

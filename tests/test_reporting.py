@@ -20,6 +20,24 @@ def _sample_findings() -> list[Finding]:
     ]
 
 
+def _sample_patches() -> list[dict]:
+    return [{
+        "finding_id": "F-001",
+        "title": "SQLi",
+        "severity": "Critical",
+        "status": "confirmed",
+        "target_file": "app.py",
+        "summary": "Использовать параметризованный запрос вместо конкатенации строки.",
+        "unified_diff": (
+            "--- a/app.py\n"
+            "+++ b/app.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-query = f\"SELECT * FROM users WHERE id = {user_id}\"\n"
+            "+query = \"SELECT * FROM users WHERE id = ?\"\n"
+        ),
+    }]
+
+
 class TestRender(unittest.TestCase):
     def test_render_report_structure(self):
         findings = _sample_findings()
@@ -56,6 +74,7 @@ class TestJsonable(unittest.TestCase):
 class TestSaveReport(unittest.TestCase):
     def test_writes_md_and_json_with_verdict(self):
         findings = _sample_findings()
+        patches = _sample_patches()
         verdict = compute_verdict(findings)
         coverage = [Coverage(area="injection", status="done")]
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,13 +83,17 @@ class TestSaveReport(unittest.TestCase):
                                        coverage=coverage),
                 findings=findings, output_dir=tmp, formats=["md", "json"],
                 task="audit", repo="repo", verdict=verdict, coverage=coverage,
+                fix_patches=patches,
             )
             self.assertTrue(paths["markdown"].exists())
             self.assertTrue(paths["json"].exists())
+            self.assertTrue(paths["patches_markdown"].exists())
+            self.assertTrue(paths["patches_diff"].exists())
             payload = json.loads(Path(paths["json"]).read_text(encoding="utf-8"))
             self.assertEqual(payload["verdict"]["verdict"], "FAIL")
             self.assertEqual(len(payload["findings"]), 2)
             self.assertEqual(len(payload["coverage"]), 1)
+            self.assertEqual(len(payload["fix_patches"]), 1)
 
 
 if __name__ == "__main__":
