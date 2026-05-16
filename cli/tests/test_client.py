@@ -16,7 +16,7 @@ class ScanClientTests(unittest.TestCase):
         response = _response({"scan_id": "scan-123"}, status=202)
 
         with patch("agent_scan_cli.client.request.urlopen", return_value=response) as urlopen:
-            scan_id = ScanClient("http://api.test").start_scan(
+            scan_id = ScanClient("http://api.test", api_key="secret-key").start_scan(
                 "https://github.com/org/repo",
                 webhook_url="https://hooks.test/report",
             )
@@ -27,8 +27,22 @@ class ScanClientTests(unittest.TestCase):
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(
             json.loads(req.data.decode("utf-8")),
-            {"repo_url": "https://github.com/org/repo", "webhook_url": "https://hooks.test/report"},
+            {
+                "repo_url": "https://github.com/org/repo",
+                "interactive": False,
+                "webhook_url": "https://hooks.test/report",
+            },
         )
+        # The API key, when set, is sent as a Bearer token.
+        self.assertEqual(req.get_header("Authorization"), "Bearer secret-key")
+
+    def test_completed_report_is_returned(self) -> None:
+        response = _response({"status": "completed", "report": "all clear"}, status=200)
+
+        with patch("agent_scan_cli.client.request.urlopen", return_value=response):
+            report = ScanClient("http://api.test").get_report("scan-123")
+
+        self.assertEqual(report, "all clear")
 
     def test_get_report_maps_202_running_to_not_ready(self) -> None:
         response = _response({"status": "running", "report": None}, status=202)

@@ -38,9 +38,12 @@ class ReportResponse:
 class ScanClient:
     base_url: str = DEFAULT_BASE_URL
     timeout: float = 30.0
+    api_key: str | None = None
 
     def start_scan(self, repo_url: str, *, webhook_url: str | None = None) -> str:
-        request_body = {"repo_url": repo_url}
+        # interactive=False: this CLI has no resume command, so scans must run
+        # to completion without pausing on clarify/gate prompts.
+        request_body: dict[str, Any] = {"repo_url": repo_url, "interactive": False}
         if webhook_url:
             request_body["webhook_url"] = webhook_url
 
@@ -77,11 +80,13 @@ class ScanClient:
             raise ScanApiError("GET report response contains a non-text report")
 
         if response.status == 202:
-            if status != "running":
+            if status not in {"running", "awaiting_input"}:
                 raise ScanApiError(f"GET report returned HTTP 202 with unexpected status {status!r}")
             return ReportResponse(status=status, report=report)
 
-        if status not in {"done", "failed"}:
+        # The backend reports a finished scan as "completed"; "done" is kept as
+        # an accepted alias for the bundled mock server.
+        if status not in {"done", "completed", "failed"}:
             raise ScanApiError(f"GET report returned unexpected status {status!r}")
         return ReportResponse(status=status, report=report)
 
@@ -89,6 +94,11 @@ class ScanClient:
         response = self.get_report_status(scan_id)
         if response.status == "running":
             raise ReportNotReady(f"Report for scan {scan_id} is still running")
+        if response.status == "awaiting_input":
+            raise ScanApiError(
+                f"Scan {scan_id} is paused awaiting user input; this CLI runs "
+                "scans non-interactively and cannot resume it"
+            )
         if response.status == "failed":
             raise ScanFailed(response.report or f"Scan {scan_id} failed")
         if response.report is None:
@@ -128,6 +138,8 @@ class ScanClient:
         expected_statuses: set[int],
     ) -> "_JsonResponse":
         headers = {"Content-Type": "application/json", **(headers or {})}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
             status, response_body = self._request(method, path, body=body, headers=headers)
         except error.HTTPError as exc:
@@ -135,6 +147,11 @@ class ScanClient:
                 details = _read_http_error_json(exc)
                 detail = details.get("detail") if isinstance(details, dict) else None
                 raise ScanNotFound(str(detail or "scan not found")) from exc
+            if exc.code in (401, 403):
+                raise ScanApiError(
+                    f"Scan API rejected the request (HTTP {exc.code}). "
+                    "Set a valid key via --api-key or the SCAN_API_KEY environment variable."
+                ) from exc
             raise _api_error_from_http(exc) from exc
 
         if status not in expected_statuses:

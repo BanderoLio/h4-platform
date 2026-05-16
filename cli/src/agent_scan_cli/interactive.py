@@ -21,6 +21,7 @@ from .terminal import BLUE, DIM, GREEN, MAGENTA, Terminal
 class InteractiveState:
     base_url: str
     timeout: float
+    api_key: str | None = None
     last_scan_id: str | None = None
 
 
@@ -30,11 +31,13 @@ class InteractiveApp:
         *,
         initial_base_url: str | None = None,
         initial_timeout: float = 30.0,
+        initial_api_key: str | None = None,
         terminal: Terminal | None = None,
     ) -> None:
         self.state = InteractiveState(
             base_url=initial_base_url or os.getenv("SCAN_API_URL", DEFAULT_BASE_URL),
             timeout=initial_timeout,
+            api_key=initial_api_key or os.getenv("SCAN_API_KEY"),
         )
         self.terminal = terminal or Terminal()
 
@@ -64,6 +67,8 @@ class InteractiveApp:
         self.terminal.section("Подключение")
         self.terminal.output(f"  API:     {self.terminal.paint(self.state.base_url, BLUE)}")
         self.terminal.output(f"  Timeout: {self.terminal.paint(f'{self.state.timeout:g}s', BLUE)}")
+        key_label, key_style = ("задан", BLUE) if self.state.api_key else ("не задан", DIM)
+        self.terminal.output(f"  API key: {self.terminal.paint(key_label, key_style)}")
         last_id_style = BLUE if self.state.last_scan_id else DIM
         self.terminal.output(f"  Last ID: {self.terminal.paint(self.state.last_scan_id or '-', last_id_style)}")
 
@@ -163,6 +168,10 @@ class InteractiveApp:
             f"HTTP timeout, сек [{self.state.timeout:g}]",
             self.state.timeout,
         )
+        current_key = "задан" if self.state.api_key else "не задан"
+        api_key = self.terminal.prompt(f"API key (Bearer) [{current_key}, Enter — без изменений]").strip()
+        if api_key:
+            self.state.api_key = api_key
         self.terminal.notice("Настройки обновлены для текущей сессии CLI.", kind="ok")
         self.terminal.pause()
 
@@ -203,7 +212,11 @@ class InteractiveApp:
                 time.sleep(interval)
 
     def _client(self) -> ScanClient:
-        return ScanClient(base_url=self.state.base_url, timeout=self.state.timeout)
+        return ScanClient(
+            base_url=self.state.base_url,
+            timeout=self.state.timeout,
+            api_key=self.state.api_key,
+        )
 
     def _webhook_url(self) -> str | None:
         raw = self.terminal.prompt("Webhook URL [optional]").strip()
