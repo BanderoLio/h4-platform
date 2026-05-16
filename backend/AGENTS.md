@@ -74,6 +74,15 @@ Add new columns to `app/models.py` first, then autogenerate. Always add a matchi
 
 **DB access** — use functions from `app/db.py`, never import `AsyncSessionLocal` directly. The session factory is accessed via `database.AsyncSessionLocal` at call time so tests can patch it.
 
+## Session Migration Note
+
+`/scan` HTTP endpoints now call `agentsec.session` (`start_session`, `get_session`, `resume_session`, `list_sessions`) as the source of truth for scan lifecycle.
+
+That means the legacy ARQ enqueue path used by `/scan/start` is no longer active:
+
+- `app.main` does not create an ARQ pool for API requests anymore.
+- `app/worker/tasks.py` and Redis worker wiring remain in the repository as a temporary migration fallback, but are not used by the primary HTTP flow.
+
 **Worker job signature** — `run_scan(ctx, scan_id, repo_url, webhook_url, query)`. The `ctx` dict is injected by ARQ and contains `job_try` (int, 1-indexed). Check it for retry logic.
 
 **Retry policy** — transient errors (`OSError`, `ConnectionError`, `TimeoutError`, `GitCommandError`) raise `arq.worker.Retry` on attempts 1–2, permanent failure on attempt 3. Non-transient errors fail immediately.

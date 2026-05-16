@@ -4,7 +4,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from unittest.mock import AsyncMock
 
 os.environ.setdefault("API_KEY", "test-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
@@ -34,15 +33,7 @@ async def isolated_db(tmp_path, monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def mock_arq():
-    mock = AsyncMock()
-    mock.enqueue_job = AsyncMock()
-    app.state.arq = mock
-    yield mock
-
-
-@pytest_asyncio.fixture
-async def client(mock_arq):
+async def client():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:

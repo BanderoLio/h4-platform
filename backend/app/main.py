@@ -1,13 +1,8 @@
 from contextlib import asynccontextmanager
 
-from alembic import command
-from alembic.config import Config
-from arq import create_pool
-from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
-from app.config import settings
 from app.routes.scan import router as scan_router
 
 
@@ -18,10 +13,10 @@ from app.routes.scan import router as scan_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # _run_migrations()
-    app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    # ARQ queue bootstrap is intentionally disabled:
+    # /scan endpoints now delegate execution to agentsec.session.
+    # Legacy worker code remains in the repo as migration fallback only.
     yield
-    await app.state.arq.close()
 
 
 app = FastAPI(title="Hack4 Pentest API", lifespan=lifespan)

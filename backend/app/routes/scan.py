@@ -1,13 +1,17 @@
-import uuid
-
-from arq import ArqRedis
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 
 from app.auth import require_api_key
-from app.db import create_scan, get_scan, update_scan
 from app.repo_url_validation import validate_worker_fetch_url
+
+try:
+    from agentsec.session import get_session, list_sessions, resume_session, start_session
+except Exception:  # pragma: no cover - exercised in integration envs
+    get_session = None
+    list_sessions = None
+    resume_session = None
+    start_session = None
 
 router = APIRouter(prefix="/scan", dependencies=[Depends(require_api_key)])
 
@@ -16,6 +20,7 @@ class StartScanRequest(BaseModel):
     repo_url: HttpUrl
     webhook_url: HttpUrl | None = None
     query: str | None = None
+    interactive: bool = True
 
     @field_validator("repo_url")
     @classmethod
@@ -43,31 +48,121 @@ class ReportResponse(BaseModel):
     report: str | None
 
 
-def get_arq(request: Request) -> ArqRedis:
-    return request.app.state.arq
+class ResumeScanRequest(BaseModel):
+    answer: str
+
+
+class SessionSummary(BaseModel):
+    id: str
+    status: str
+    repo: str | None = None
+    task: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class ListSessionsResponse(BaseModel):
+    items: list[SessionSummary]
+    limit: int
+    offset: int
+
+
+class SessionNotFoundError(Exception):
+    pass
+
+
+class InvalidSessionStateError(Exception):
+    pass
+
+
+def _require_session_api() -> None:
+    if not all((start_session, get_session, resume_session, list_sessions)):
+        raise HTTPException(status_code=503, detail="Session backend unavailable")
+
+
+def _read_field(record: dict | object, field: str):
+    if isinstance(record, dict):
+        return record.get(field)
+    return getattr(record, field, None)
+
+
+def _normalize_status(status: str | None) -> str:
+    if status == "done":
+        return "completed"
+    return status or "running"
+
+
+def _load_session_or_404(scan_id: str) -> dict | object:
+    try:
+        session = get_session(scan_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="scan not found")
+    except Exception as exc:
+        message = str(exc).lower()
+        if "not found" in message or "missing" in message:
+            raise HTTPException(status_code=404, detail="scan not found")
+        raise HTTPException(status_code=503, detail="Session backend unavailable")
+
+    if session is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    return session
 
 
 @router.post("/start", status_code=202, response_model=StartScanResponse)
-async def start_scan(body: StartScanRequest, arq: ArqRedis = Depends(get_arq)):
-    scan_id = str(uuid.uuid4())
+async def start_scan(body: StartScanRequest):
+    _require_session_api()
     repo_url = str(body.repo_url)
-    webhook_url = str(body.webhook_url) if body.webhook_url else None
-    await create_scan(scan_id, repo_url, webhook_url)
+    task = body.query or f"Security scan for repository {repo_url}"
     try:
-        await arq.enqueue_job("run_scan", scan_id, repo_url, webhook_url, body.query)
+        session_id = start_session(task=task, repo=repo_url, interactive=body.interactive)
     except Exception:
-        await update_scan(scan_id, "failed", "Failed to enqueue scan job")
-        raise HTTPException(status_code=503, detail="Queue unavailable, try again")
-    return StartScanResponse(scan_id=scan_id)
+        raise HTTPException(status_code=503, detail="Session backend unavailable")
+    return StartScanResponse(scan_id=session_id)
+
+
+@router.get("/sessions", response_model=ListSessionsResponse)
+async def get_sessions(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    _require_session_api()
+    try:
+        records = list_sessions(limit=limit, offset=offset)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Session backend unavailable")
+    items = [SessionSummary.model_validate(record, from_attributes=True) for record in records]
+    return ListSessionsResponse(items=items, limit=limit, offset=offset)
 
 
 @router.get("/{scan_id}/report", response_model=ReportResponse)
 async def get_report(scan_id: str):
-    row = await get_scan(scan_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="scan not found")
-    status_code = 200 if row.status in ("done", "failed") else 202
+    _require_session_api()
+    row = _load_session_or_404(scan_id)
+    status = _normalize_status(_read_field(row, "status"))
+    report = _read_field(row, "report_md") or _read_field(row, "report")
+    status_code = 200 if status in ("completed", "failed") else 202
     return JSONResponse(
         status_code=status_code,
-        content={"status": row.status, "report": row.report},
+        content={"status": status, "report": report},
     )
+
+
+@router.post("/{scan_id}/resume", status_code=202)
+async def resume_scan(scan_id: str, body: ResumeScanRequest):
+    _require_session_api()
+    try:
+        resume_session(scan_id, body.answer)
+    except InvalidSessionStateError:
+        raise HTTPException(status_code=409, detail="scan is not awaiting input")
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="scan not found")
+    except Exception as exc:
+        message = str(exc).lower()
+        if "awaiting" in message:
+            raise HTTPException(status_code=409, detail="scan is not awaiting input")
+        if "not found" in message or "missing" in message:
+            raise HTTPException(status_code=404, detail="scan not found")
+        raise HTTPException(status_code=503, detail="Session backend unavailable")
+    return {"status": "accepted"}
