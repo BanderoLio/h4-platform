@@ -90,6 +90,19 @@ def file_outline(store: IndexStore, path: str) -> list[dict[str, Any]]:
                         "WHERE file = ? ORDER BY line", (path,))
 
 
+def enclosing_symbol(store: IndexStore, file: str,
+                     line: int) -> dict[str, Any] | None:
+    """Самый вложенный символ файла, охватывающий строку (для среза кода)."""
+    rows = _rows(
+        store,
+        "SELECT name, kind, line, end_line FROM symbols "
+        "WHERE file = ? AND line <= ? AND end_line >= ? "
+        "ORDER BY (end_line - line) ASC LIMIT 1",
+        (file, line, line),
+    )
+    return rows[0] if rows else None
+
+
 def find_files(store: IndexStore, role: str | None = None,
                language: str | None = None) -> list[dict[str, Any]]:
     """Файлы инвентаря с фильтрами по роли и языку."""

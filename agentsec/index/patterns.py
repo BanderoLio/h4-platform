@@ -18,6 +18,7 @@ from .model import (
     SINK_DESERIALIZE,
     SINK_EVAL,
     SINK_FILE,
+    SINK_SECRET,
     SINK_SQL,
     SINK_SSRF,
     EntryPoint,
@@ -45,6 +46,14 @@ _SINK_RX: list[tuple[str, re.Pattern]] = [
     (SINK_SSRF, re.compile(r"\brequests\.(?:get|post|put|delete|request|head)\s*\(|"
                            r"\burllib\.request|\burlopen\s*\(|\bhttpx\.|"
                            r"\baxios\.|\bfetch\s*\(")),
+    # Захардкоженные секреты: присваивание ключа/пароля строковому литералу
+    # длиной >=6, плюс характерные форматы токенов и приватный ключ.
+    (SINK_SECRET, re.compile(
+        r"(?i)(?:api[_-]?key|secret|passwd|password|access[_-]?key|"
+        r"auth[_-]?token|private[_-]?key)\s*[:=]\s*['\"][^'\"]{6,}['\"]"
+        r"|AKIA[0-9A-Z]{16}"
+        r"|\bsk-[A-Za-z0-9]{16,}"
+        r"|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
 ]
 
 # --- паттерны точек входа ----------------------------------------------------

@@ -22,6 +22,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .agents.specialists import SPECIALIST_LABELS, make_specialist_runners
+from .agents.triage import triage_specialist
 from .agents.validator import make_validator_node
 from .config import CONFIG, elapsed
 from .index import index_repo
@@ -228,18 +229,29 @@ def _recon(state: AnalysisState) -> dict:
     if repo_section:
         parts.append(repo_section)
 
-    explore_q = (
-        f"Изучи репозиторий под задачу: {task}. Опиши структуру, языки и "
-        "фреймворки, точки входа (HTTP-роуты, CLI, обработчики), ключевые "
-        "файлы и attack surface."
-    )
-    try:
-        parts.append("## Разведка кодовой базы\n" +
-                      minions["explore_codebase"].invoke({"query": explore_q}))
-        coverage.append(Coverage(area="recon:codebase", status="done"))
-    except Exception as err:  # noqa: BLE001
-        coverage.append(Coverage(area="recon:codebase", status="error",
-                                 note=str(err)[:200]))
+    # На большом репо explore-миньон (ReAct-агент) избыточен и медленен —
+    # Repo Map уже даёт структуру/attack surface детерминированно. Гоняем
+    # explore только на небольших репозиториях.
+    files = (state.get("repo_map_summary") or {}).get("files", 0)
+    if files and files > CONFIG.explore_skip_files:
+        _log(f"[recon] большой репо ({files} файлов) — explore-миньон "
+             "пропущен, используется Repo Map")
+        coverage.append(Coverage(area="recon:codebase", status="done",
+                                 note="Repo Map (explore-миньон пропущен)"))
+    else:
+        explore_q = (
+            f"Изучи репозиторий под задачу: {task}. Опиши структуру, языки и "
+            "фреймворки, точки входа (HTTP-роуты, CLI, обработчики), ключевые "
+            "файлы и attack surface."
+        )
+        try:
+            parts.append("## Разведка кодовой базы\n" +
+                          minions["explore_codebase"].invoke(
+                              {"query": explore_q}))
+            coverage.append(Coverage(area="recon:codebase", status="done"))
+        except Exception as err:  # noqa: BLE001
+            coverage.append(Coverage(area="recon:codebase", status="error",
+                                     note=str(err)[:200]))
 
     try:
         parts.append("## Документация и модель безопасности\n" +
@@ -276,12 +288,30 @@ def _make_specialist_node(vuln_class: str, runner):
         if CONFIG.stub_specialists:
             return {"coverage": [Coverage(area=vuln_class, status="gap",
                                           note="стаб-режим")]}
-        scope = state.get("scope") or {}
-        focus = vuln_class in (scope.get("focus") or _FOCUS_CLASSES)
         clar = "\n".join(
             f"Q: {c['question']}\nA: {c['answer']}"
             for c in state.get("clarifications", [])
         )
+        # Triage-режим: если Repo Map построен — детерминированный триаж
+        # кандидатов (инкрементально, с бюджетом; частичный результат
+        # сохраняется при исчерпании времени).
+        if index_db_path(Path(CONFIG.analysis_root)).exists():
+            task_text = state["task"] + (
+                f"\n\nУточнения пользователя:\n{clar}" if clar else "")
+            try:
+                return triage_specialist(vuln_class, task_text)
+            except Exception as err:  # noqa: BLE001 — сбой триажа не роняет граф
+                _log(f"[{label}] триаж упал: {err}")
+                return {
+                    "coverage": [Coverage(area=vuln_class, status="error",
+                                          note=str(err)[:200])],
+                    "errors": [f"триаж {label}: {err}"],
+                }
+
+        # Fallback: индекса нет (маленький репо/индексация не удалась) —
+        # exploratory ReAct-специалист.
+        scope = state.get("scope") or {}
+        focus = vuln_class in (scope.get("focus") or _FOCUS_CLASSES)
         brief, n_candidates = _candidate_brief(vuln_class)
         task = (
             f"Задача пользователя: {state['task']}\n\n"

@@ -33,6 +33,7 @@ SINK_FILE = "file"
 SINK_EVAL = "eval"
 SINK_CRYPTO = "crypto"
 SINK_SSRF = "ssrf"
+SINK_SECRET = "secret"          # захардкоженный секрет/ключ/пароль
 
 
 @dataclass
