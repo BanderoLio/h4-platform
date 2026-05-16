@@ -14,6 +14,7 @@ from .client import (
     ScanNotFound,
     default_report_path,
 )
+from .markdown import render_markdown
 from .terminal import BLUE, DIM, GREEN, MAGENTA, Terminal
 
 
@@ -109,6 +110,7 @@ class InteractiveApp:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(report, encoding="utf-8")
             self.terminal.notice(f"Отчет сохранен: {output_path}", kind="ok")
+            self._show_report(report)
             self.terminal.pause()
             return scan_id
         except (ScanApiError, TimeoutError) as exc:
@@ -144,8 +146,11 @@ class InteractiveApp:
 
         output_path = self._report_path(scan_id)
         try:
-            self._client().save_report(scan_id, output_path)
+            report = self._client().get_report(scan_id)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(report, encoding="utf-8")
             self.terminal.notice(f"Отчет сохранен: {output_path}", kind="ok")
+            self._show_report(report)
         except ReportNotReady:
             self.terminal.notice(
                 "Скан еще выполняется. Можно вернуться позже или выбрать полный сценарий ожидания.",
@@ -178,6 +183,11 @@ class InteractiveApp:
     def _report_path(self, scan_id: str) -> Path:
         raw = self.terminal.prompt(f"Куда сохранить отчет [{default_report_path(scan_id)}]").strip()
         return Path(raw) if raw else default_report_path(scan_id)
+
+    def _show_report(self, report: str) -> None:
+        """Печатает markdown-отчёт в терминал в читаемом виде."""
+        self.terminal.section("Отчёт")
+        self.terminal.output(render_markdown(report, color=self.terminal.color))
 
     def _poll_report(
         self,

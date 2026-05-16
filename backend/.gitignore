@@ -11,6 +11,9 @@ __pycache__/
 
 *.db
 
+# Per-scan cloned repositories created at runtime by /scan/start.
+.data/
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

@@ -10,6 +10,9 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_scans.db")
 os.environ.setdefault("REPOS_DIR", "/tmp/test_repos")
 os.environ.setdefault("WEBHOOK_TOKEN", "test-webhook-secret")
+# Pin local-path scanning off so a developer's backend/.env cannot leak into
+# tests; cases that need it monkeypatch _resolve_local_repo directly.
+os.environ.setdefault("ALLOWED_LOCAL_ROOTS", "")
 
 from app import database  # noqa: E402
 from app.main import app  # noqa: E402

@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agentsec.reporting import findings_to_jsonable, render_report, save_report
+from agentsec.reporting import (
+    build_structured_result,
+    findings_to_jsonable,
+    render_report,
+    save_report,
+)
 from agentsec.schema import STATUS_CONFIRMED, Coverage, Finding, compute_verdict
 
 
@@ -71,6 +76,41 @@ class TestSaveReport(unittest.TestCase):
             self.assertEqual(payload["verdict"]["verdict"], "FAIL")
             self.assertEqual(len(payload["findings"]), 2)
             self.assertEqual(len(payload["coverage"]), 1)
+
+
+class TestStructuredResult(unittest.TestCase):
+    def test_summary_and_problems_from_findings(self):
+        findings = _sample_findings()
+        verdict = compute_verdict(findings)
+        result = build_structured_result(
+            findings=findings, verdict=verdict,
+            coverage=[Coverage(area="injection", status="done")],
+            status="completed", scan_id="abc", task="audit", repo="/x",
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["summary"]["verdict"], "FAIL")
+        self.assertEqual(result["summary"]["exit_code"], 1)
+        self.assertEqual(len(result["problems"]), 2)
+        self.assertEqual(result["problems"][0]["id"], "F-001")
+        # file:line is split into separate fields for CI annotations.
+        self.assertEqual(result["problems"][0]["file"], "app.py")
+        self.assertEqual(result["problems"][0]["line"], 42)
+        self.assertEqual(len(result["coverage"]), 1)
+
+    def test_file_field_tolerates_backticks_and_line_ranges(self):
+        finding = Finding(id="F-009", title="X", severity="High",
+                          file="`app.py:33-51`")
+        result = build_structured_result(findings=[finding], verdict={})
+        self.assertEqual(result["problems"][0]["file"], "app.py")
+        self.assertEqual(result["problems"][0]["line"], 33)
+
+    def test_failed_scan_is_a_blocking_result(self):
+        result = build_structured_result(
+            findings=[], verdict={}, status="failed", error="boom",
+        )
+        self.assertEqual(result["summary"]["verdict"], "FAIL")
+        self.assertEqual(result["summary"]["exit_code"], 1)
+        self.assertEqual(result["error"], "boom")
 
 
 if __name__ == "__main__":
