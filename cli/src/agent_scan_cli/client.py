@@ -20,6 +20,13 @@ class ScanApiError(RuntimeError):
     """Raised when the scan API returns an unexpected response."""
 
 
+class ScanAuthError(ScanApiError):
+    """Raised when the scan API rejects the request for missing/invalid auth.
+
+    HTTP 401 (wrong key) or 403 (no Authorization header at all).
+    """
+
+
 class ReportNotReady(ScanApiError):
     """Raised when the report endpoint returns 202 with a running status."""
 
@@ -196,7 +203,7 @@ class ScanClient:
                 detail = details.get("detail") if isinstance(details, dict) else None
                 raise ScanNotFound(str(detail or "scan not found")) from exc
             if exc.code in (401, 403):
-                raise ScanApiError(
+                raise ScanAuthError(
                     f"Scan API rejected the request (HTTP {exc.code}). "
                     "Set a valid key via --api-key or the SCAN_API_KEY environment variable."
                 ) from exc

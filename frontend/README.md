@@ -1,4 +1,4 @@
-# Security Agent WebUI (MVP)
+# Security Agent WebUI
 
 Cursor-like web interface for the cybersecurity AI agent.
 
@@ -12,7 +12,26 @@ Cursor-like web interface for the cybersecurity AI agent.
    - chat-like message stream,
    - prompt input area,
    - markdown rendering for AI replies.
-5. Each prompt triggers scan API and appends the response to current run history.
+5. Each prompt triggers the scan API and appends the response to the
+   current run history.
+
+## Backend connectivity (BFF proxy)
+
+The backend requires a Bearer API key on every `/scan/*` request. The
+browser never holds that key: it calls the same-origin proxy at `/api/*`
+(`app/api/[...path]/route.ts`), which forwards the request to the backend
+server-side and injects `Authorization: Bearer <API_KEY>`.
+
+```
+browser ──/api/scan/start──▶ Next.js route handler ──Bearer──▶ FastAPI /scan/start
+```
+
+Server-side env (`.env`, never exposed to the client):
+
+- `BACKEND_INTERNAL_URL` — backend origin the proxy forwards to.
+- `API_KEY` — backend API key, injected by the proxy.
+
+A live `/health` poll in the navbar shows backend reachability.
 
 ## API contract used by frontend
 
@@ -29,40 +48,30 @@ Cursor-like web interface for the cybersecurity AI agent.
 }
 ```
 
-- Response: `202` with:
-
-```json
-{
-  "scan_id": "uuid"
-}
-```
+- Response: `202` with `{ "scan_id": "uuid" }`.
 
 ### Get report
 
 - `GET /scan/{scan_id}/report`
 - Responses:
-  - `202 { "status": "running" | "awaiting_input", "report": "string | null" }`
-  - `200 { "status": "completed" | "failed", "report": "string | null" }`
+  - `202 { "status": "running" | "awaiting_input", "report": null, "interrupt_type": "clarify" | "gate" | null, "question": "string | null" }`
+  - `200 { "status": "completed" | "failed", "report": "string | null", "interrupt_type": null, "question": null }`
   - `404 { "detail": "scan not found" }`
+- When `status` is `awaiting_input`, `question` carries the agent's
+  clarifying prompt; the workspace renders it as the assistant message.
 
 ### Resume interrupted run
 
 - `POST /scan/{scan_id}/resume`
-- Request body:
-
-```json
-{ "answer": "..." }
-```
-
-- Response codes:
-  - `202` accepted
-  - `409` session is not awaiting input
-  - `404` scan not found
+- Request body: `{ "answer": "..." }`
+- Response codes: `202` accepted, `409` not awaiting input, `404` not found.
 
 ### List sessions
 
 - `GET /scan/sessions?limit=50&offset=0`
-- Used by frontend as source of truth for per-repository run history.
+- Source of truth for per-repository run history. Each item exposes
+  `repo_url` (original git URL) — the frontend correlates sessions to
+  registry entries by it, not by the server-side `repo` clone path.
 
 ## Tech stack
 
@@ -79,7 +88,8 @@ Cursor-like web interface for the cybersecurity AI agent.
 ```text
 frontend/
 ├── app/
-│   └── [locale]/repos/[repoId]  # Per-repository workspace
+│   ├── [locale]/repos/[repoId]  # Per-repository workspace
+│   └── api/[...path]            # BFF proxy to the scan backend
 ├── components/
 ├── features/
 │   ├── repositories/            # Local storage models and helpers
@@ -92,13 +102,15 @@ frontend/
 
 ## Environment variables
 
-Create `.env.local`:
+Copy `env.example` to `.env.local`:
 
 ```env
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+BACKEND_INTERNAL_URL=http://localhost:8000
+API_KEY=changeme
+NEXT_OUTPUT=standalone
 ```
 
-If not set, browser requests use current origin and SSR uses `http://localhost:8000`.
+`API_KEY` must match the backend's `API_KEY`.
 
 ## Run locally
 
@@ -114,9 +126,27 @@ pnpm lint
 pnpm build
 ```
 
-## MVP limitations
+## End-to-end tests
 
-- No authentication or server-side repository persistence.
-- Repository list and workspace history are local to browser/device.
+Playwright drives the full flow (add repo → run scan → read report) against
+the live stack.
+
+```bash
+# brings the whole stack up via the root docker-compose.yml automatically
+pnpm exec playwright install chromium
+pnpm e2e
+```
+
+To test an already-running deployment, skip the bring-up:
+
+```bash
+E2E_NO_WEBSERVER=1 E2E_BASE_URL=http://localhost:8080 pnpm e2e
+```
+
+## Known limitations
+
+- Repository registry is local to the browser/device (no server-side
+  repository persistence).
 - Report retrieval is polling-based (no SSE/WebSocket streaming).
-- Chat transcript is stored locally, while session states are synced from `/scan/sessions`.
+- Chat transcript is stored locally; session states are synced from
+  `/scan/sessions`.

@@ -156,6 +156,7 @@ def start_session(
     *,
     interactive: bool = True,
     session_id: str | None = None,
+    repo_url: str | None = None,
 ) -> str:
     """Создаёт сессию, ставит скан в очередь и возвращает её id.
 
@@ -165,6 +166,10 @@ def start_session(
     `session_id` можно передать заранее — это позволяет вызывающему
     (HTTP-бэкенду) привязать к нему артефакты до старта скана, например
     каталог клонированного репозитория.
+
+    `repo_url` — исходный git-URL, если `repo` это клон. Сохраняется
+    отдельно от `repo` (путь к клону): по нему фронтенд связывает
+    сессии с записью репозитория в своём реестре.
     """
     task = (task or "").strip()
     if not task:
@@ -176,7 +181,7 @@ def start_session(
     title = task[:60] + ("…" if len(task) > 60 else "")
     _get_store().create_session(SessionRecord(
         id=session_id, title=title, repo=repo, task=task,
-        status=STATUS_RUNNING,
+        repo_url=repo_url, status=STATUS_RUNNING,
     ))
     _ensure_worker()
     _jobs.put((session_id, {"task": task, "repo": repo, "interactive": interactive}))

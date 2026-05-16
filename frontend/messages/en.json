@@ -5,6 +5,13 @@
     "subtitle": "Repository workspace",
     "repositories": "Repositories"
   },
+  "BackendStatus": {
+    "label": "Backend connection",
+    "online": "Backend online",
+    "offline": "Backend offline",
+    "checking": "Checking...",
+    "offlineHint": "Cannot reach the scan backend. Scans will not run until the connection is restored."
+  },
   "Footer": {
     "title": "AI Cybersecurity Agent",
     "description": "Manage repositories and run agent sessions in one place.",

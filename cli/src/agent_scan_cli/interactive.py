@@ -9,6 +9,7 @@ from .client import (
     DEFAULT_BASE_URL,
     ReportNotReady,
     ScanApiError,
+    ScanAuthError,
     ScanClient,
     ScanFailed,
     ScanNotFound,
@@ -68,8 +69,13 @@ class InteractiveApp:
         self.terminal.section("Подключение")
         self.terminal.output(f"  API:     {self.terminal.paint(self.state.base_url, BLUE)}")
         self.terminal.output(f"  Timeout: {self.terminal.paint(f'{self.state.timeout:g}s', BLUE)}")
-        key_label, key_style = ("задан", BLUE) if self.state.api_key else ("не задан", DIM)
-        self.terminal.output(f"  API key: {self.terminal.paint(key_label, key_style)}")
+        if self.state.api_key:
+            self.terminal.output(f"  API key: {self.terminal.paint('задан', BLUE)}")
+        else:
+            self.terminal.output(
+                "  API key: "
+                + self.terminal.paint("не задан — запрошу при сканировании", DIM)
+            )
         last_id_style = BLUE if self.state.last_scan_id else DIM
         self.terminal.output(f"  Last ID: {self.terminal.paint(self.state.last_scan_id or '-', last_id_style)}")
 
@@ -89,19 +95,22 @@ class InteractiveApp:
             return None
         webhook_url = self._webhook_url()
 
-        client = self._client()
         try:
             self.terminal.output("")
             self.terminal.output(self.terminal.paint("Запускаю скан...", BLUE))
-            scan_id = client.start_scan(repo_url, webhook_url=webhook_url)
+            scan_id = self._call_with_auth_retry(
+                lambda: self._client().start_scan(repo_url, webhook_url=webhook_url)
+            )
             self.terminal.output(f"{self.terminal.paint('Скан создан:', GREEN)} {scan_id}")
 
             output_path = self._report_path(scan_id)
             interval = self.terminal.prompt_float("Интервал проверки, сек [2]", 2.0)
-            wait_timeout = self.terminal.prompt_float("Таймаут ожидания, сек [600, 0 = бесконечно]", 600.0)
+            wait_timeout = self.terminal.prompt_float(
+                "Таймаут ожидания, сек [1800, 0 = бесконечно]", 1800.0
+            )
 
             report = self._poll_report(
-                client,
+                self._client(),
                 scan_id,
                 interval=interval,
                 timeout=None if wait_timeout == 0 else wait_timeout,
@@ -127,7 +136,9 @@ class InteractiveApp:
         webhook_url = self._webhook_url()
 
         try:
-            scan_id = self._client().start_scan(repo_url, webhook_url=webhook_url)
+            scan_id = self._call_with_auth_retry(
+                lambda: self._client().start_scan(repo_url, webhook_url=webhook_url)
+            )
             self.terminal.notice(f"Скан создан: {scan_id}", kind="ok")
             self.terminal.pause()
             return scan_id
@@ -146,7 +157,9 @@ class InteractiveApp:
 
         output_path = self._report_path(scan_id)
         try:
-            report = self._client().get_report(scan_id)
+            report = self._call_with_auth_retry(
+                lambda: self._client().get_report(scan_id)
+            )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(report, encoding="utf-8")
             self.terminal.notice(f"Отчет сохранен: {output_path}", kind="ok")
@@ -227,6 +240,39 @@ class InteractiveApp:
             timeout=self.state.timeout,
             api_key=self.state.api_key,
         )
+
+    def _prompt_for_api_key(self) -> bool:
+        """Запрашивает Bearer-ключ и сохраняет его в состоянии сессии.
+
+        Возвращает True, если ключ введён, и False — если пользователь
+        отменил ввод (пустая строка).
+        """
+        self.terminal.notice(
+            "Бэкенду нужен API-ключ (Bearer). Для локального docker-стека "
+            "это значение API_KEY из .env (по умолчанию changeme).",
+            kind="warn",
+        )
+        key = self.terminal.prompt("API key (Enter — отмена)").strip()
+        if key:
+            self.state.api_key = key
+            self.terminal.notice("Ключ сохранён для текущей сессии CLI.", kind="ok")
+            return True
+        return False
+
+    def _call_with_auth_retry(self, action):
+        """Выполняет вызов API; при ошибке авторизации (HTTP 401/403)
+        запрашивает ключ и повторяет вызов.
+
+        `action` обязан заново строить клиента (через `self._client()`),
+        чтобы повтор подхватил обновлённый ключ.
+        """
+        while True:
+            try:
+                return action()
+            except ScanAuthError as exc:
+                self.terminal.notice(str(exc), kind="error")
+                if not self._prompt_for_api_key():
+                    raise
 
     def _webhook_url(self) -> str | None:
         raw = self.terminal.prompt("Webhook URL [optional]").strip()

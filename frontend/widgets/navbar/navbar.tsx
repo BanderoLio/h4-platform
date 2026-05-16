@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { Link, usePathname } from '@/navigation';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
+import { BackendStatus } from '@/widgets/navbar/backend-status';
 
 export function Navbar({ titleFont }: { titleFont: string }) {
   const t = useTranslations('Navbar');
@@ -37,6 +38,7 @@ export function Navbar({ titleFont }: { titleFont: string }) {
           </div>
         </Link>
         <div className="flex items-center gap-1 sm:gap-2">
+          <BackendStatus />
           <Button
             asChild
             size="sm"

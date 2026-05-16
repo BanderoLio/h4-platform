@@ -10,9 +10,15 @@ export type StartScanResponse = {
   scan_id: string;
 };
 
+export type ScanInterruptType = 'clarify' | 'gate';
+
 export type ScanReportResponse = {
   status: ScanStatus;
   report: string | null;
+  // Present only while status is 'awaiting_input': the kind of pause and the
+  // agent's question to show the user before they call /resume.
+  interrupt_type?: ScanInterruptType | null;
+  question?: string | null;
 };
 
 export type ScanNotFoundResponse = {
@@ -30,7 +36,12 @@ export type ResumeScanResponse = {
 export type ScanSessionListItem = {
   id: string;
   status: ScanStatus;
+  // Server-side path to the cloned repository — not a stable identity key.
   repo: string;
+  // Original git URL the scan was started from. This is what the frontend
+  // correlates against its local repository registry. Null for local-path
+  // scans started via repo_path.
+  repo_url: string | null;
   task: string;
   created_at: string;
   updated_at: string;

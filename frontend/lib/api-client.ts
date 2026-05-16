@@ -19,17 +19,22 @@ class ApiResponse<T> {
 }
 
 /**
- * Prefer explicit env variable, fallback to same-origin in browser.
+ * Resolve the API base URL.
+ *
+ * By default the browser calls the same-origin BFF proxy at `/api`, which
+ * forwards requests to the backend and injects the API key server-side
+ * (see `app/api/[...path]/route.ts`). The key is never exposed to the client.
+ *
+ * `NEXT_PUBLIC_API_BASE_URL` is an escape hatch to bypass the proxy and call
+ * a backend origin directly — only useful when the backend is public and
+ * unauthenticated. Leave it unset for normal deployments.
  */
 function getApiBaseURL(): string {
   const explicitBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (explicitBaseUrl) {
-    return explicitBaseUrl;
+    return explicitBaseUrl.replace(/\/+$/, '');
   }
-  if (typeof window !== 'undefined') {
-    return window.location.origin;
-  }
-  return 'http://localhost:8000';
+  return '/api';
 }
 
 export class ApiClient {

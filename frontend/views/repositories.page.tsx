@@ -106,7 +106,13 @@ export function RepositoriesPage() {
 
         const nextCounts = sessions.items.reduce<Record<string, number>>(
           (accumulator, session) => {
-            const key = normalizeRepositoryUrl(session.repo);
+            // Correlate by the original git URL. Sessions started from a
+            // server-local path (repo_url === null) have no URL to match
+            // against a registry entry, so they are skipped here.
+            if (!session.repo_url) {
+              return accumulator;
+            }
+            const key = normalizeRepositoryUrl(session.repo_url);
             accumulator[key] = (accumulator[key] ?? 0) + 1;
             return accumulator;
           },

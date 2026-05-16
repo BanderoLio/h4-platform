@@ -157,6 +157,65 @@ list_sessions(limit=50)                # история, новейшие пер
 `CONFIG.session_db_path`. CLI server-режим не включает — поведение
 консоли не меняется (`server_mode=False`, чекпоинтер не используется).
 
+## Web UI и полный стек
+
+`backend/` — FastAPI поверх `agentsec.session` (`/scan/*`), `frontend/` —
+Next.js WebUI (Cursor-подобный чат на репозиторий). Фронтенд ходит в
+бэкенд через собственный BFF-прокси (`frontend/app/api/[...path]`), который
+подставляет `Authorization: Bearer <API_KEY>` на сервере — ключ не
+попадает в браузер.
+
+Корневой `docker-compose.yml` поднимает весь стек:
+
+```bash
+cp .env.example .env          # при желании поменяй API_KEY
+docker compose up --build
+open http://localhost:8080
+```
+
+Топология: `nginx :8080 → frontend:3000 → (BFF) → backend:8000`.
+Backend также опубликован на хосте (`localhost:8000`) — для CLI.
+
+Локальная разработка фронтенда без Docker: `cd frontend && pnpm install &&
+pnpm dev` (нужен `.env.local` с `API_KEY` и `BACKEND_INTERNAL_URL`).
+
+По умолчанию бэкенд использует **agentsec-stub**: сканы детерминированные
+(`AGENTSEC_STUB_BEHAVIOR`), не требуют LLM-ключа — это удобно для e2e и
+демо. Отчёт такого скана выглядит как `[stub] completed for repo ...`.
+
+**Реальный анализ** (настоящий agentsec + LLM) включается override-файлом:
+
+```bash
+# в .env: OPENAI_API_KEY (обязательно), MODEL, OPENAI_BASE_URL
+docker compose -f docker-compose.yml -f docker-compose.real.yml up --build
+```
+
+В этом режиме бэкенд собирается из `deploy/backend.real.Dockerfile`
+(контекст — корень репозитория, в образ кладётся пакет `agentsec/`).
+Сканы выполняют реальный мультиагентный анализ — идут минуты и могут
+встать на паузу с уточняющим вопросом (воркспейс его покажет).
+
+E2E полного флоу — Playwright из `frontend/` (`pnpm e2e`).
+
+### CLI
+
+`cli/` — терминальный клиент к тому же backend (`agent-scan`). Подробнее —
+`cli/readme.md`. Запуск через стек, без локального Python (сервис `cli`,
+профиль `cli` — `docker compose up` его не поднимает):
+
+```bash
+docker compose run --rm cli scan https://github.com/octocat/Hello-World
+docker compose run --rm cli            # интерактивное меню
+```
+
+Либо локально из venv:
+
+```bash
+cd cli && python3 -m venv venv && source venv/bin/activate && pip install -e .
+SCAN_API_URL=http://localhost:8000 SCAN_API_KEY=changeme \
+  agent-scan scan https://github.com/octocat/Hello-World
+```
+
 ## MCP-доступ к системе
 
 В репозитории есть отдельный MCP-адаптер `agentsec_mcp`, который

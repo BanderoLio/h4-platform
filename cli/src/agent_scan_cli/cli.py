@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--wait-timeout",
         type=float,
-        default=600.0,
+        default=1800.0,
         help="Maximum time to wait for the report in seconds. Use 0 to wait forever.",
     )
 
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--wait-timeout",
         type=float,
-        default=600.0,
+        default=1800.0,
         help="Maximum time to wait for the result in seconds. Use 0 to wait forever.",
     )
     result.add_argument(
