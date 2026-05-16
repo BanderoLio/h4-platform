@@ -157,6 +157,28 @@ list_sessions(limit=50)                # история, новейшие пер
 `CONFIG.session_db_path`. CLI server-режим не включает — поведение
 консоли не меняется (`server_mode=False`, чекпоинтер не используется).
 
+## MCP-доступ к системе
+
+В репозитории есть отдельный MCP-адаптер `agentsec_mcp`, который
+переиспользует `agentsec/session.py` и не меняет оркестратор.
+
+Запуск:
+
+```bash
+python -m agentsec_mcp
+```
+
+Доступные tools:
+
+- `start_analysis(task, repo, interactive=True)` — создать сессию и поставить скан в очередь;
+- `get_session(session_id)` — получить текущий статус и полезную нагрузку паузы;
+- `resume_session(session_id, answer)` — продолжить сессию из `awaiting_input`;
+- `list_sessions(limit=50, offset=0)` — получить историю сессий.
+
+Готовый конфиг для MCP-клиента: `mcp/agentsec.mcp.json`.
+Очередь остаётся общей и последовательной: при нескольких одновременных
+вызовах новые сессии становятся в тот же фоновый queue.
+
 ## Структура
 
 ```
@@ -188,7 +210,10 @@ docs/
   orchestrator-plan.md       план работ и архитектурные решения
 eval/
   run_eval.py                harness для сравнения отчёта с эталоном
+agentsec_mcp/
+  server.py                  MCP server с tools для start/get/resume/list сессий
 mcp/
+  agentsec.mcp.json          пример MCP-конфига для запуска agentsec_mcp
   scanners.mcp.json          пример MCP-конфига для scanners
 ```
 

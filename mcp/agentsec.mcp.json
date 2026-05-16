@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agentsec": {
+      "command": "python",
+      "args": ["-m", "agentsec_mcp"]
+    }
+  }
+}
+
