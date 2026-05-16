@@ -3,6 +3,8 @@ langgraph>=0.3.0,<2.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
 python-dotenv>=1.0.0
+# MCP server/runtime (stdio transport + tools).
+mcp
 # SQLite-чекпоинтер LangGraph: персистентность состояния графа между
 # прогонами — пауза на interrupt() и возобновление сессии анализа.
 # >=3.1: ранние ветки тянут langgraph-checkpoint<4 и ломают langgraph 1.x.
