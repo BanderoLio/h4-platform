@@ -23,6 +23,39 @@ class Config:
     # Момент старта анализа (monotonic) — для подсчёта прошедшего времени.
     started_at: float = field(default_factory=time.monotonic)
 
+    # --- оркестрация графа ---
+    # Интерактивный режим: можно задавать вопросы пользователю (intake/gate).
+    interactive: bool = True
+    # Запускать детерминистические сканеры в фазе recon.
+    run_scanners: bool = False
+    # Сколько раз ретраить узел-специалист при ошибке или пустом результате.
+    specialist_retries: int = 1
+    # Жёсткий лимит времени на одного специалиста (сек). Гарантирует
+    # адекватное время прогона: ReAct-петля специалиста на большом репо
+    # иначе ничем, кроме recursion_limit, не ограничена.
+    specialist_timeout_sec: int = 240
+    # Стаб-режим: специалисты возвращают пустой результат (сборка/тест без B).
+    stub_specialists: bool = False
+    # Параллелизм валидатора: находки проверяются пулом потоков.
+    validator_max_workers: int = 4
+    # Лимит шагов ReAct-агента валидатора на одну находку (защита от петель).
+    validator_recursion_limit: int = 18
+
+    # --- quality gate ---
+    # Severity, при которых подтверждённая находка блокирует сборку.
+    gate_fail_severities: tuple[str, ...] = ("Critical", "High")
+
+    # --- сессии и персистентность (server-режим для FastAPI-бэкенда) ---
+    # True -> узлы _clarify/_gate ставят граф на паузу через interrupt()
+    # вместо чтения ответа из stdin. CLI его не выставляет: поведение
+    # консоли не меняется. interactive решает «задавать ли вопрос»,
+    # server_mode — «как задавать» (HTTP-пауза vs stdin).
+    server_mode: bool = False
+    # Единый SQLite-файл: и чекпоинтер LangGraph, и таблица sessions.
+    session_db_path: Path = field(default_factory=lambda: Path("agentsec_sessions.db"))
+    # Флаг Фазы 2 (дозапросы по завершённому скану). По умолчанию выкл.
+    enable_followup: bool = False
+
 
 CONFIG = Config()
 

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "semgrep": {
+      "command": "semgrep",
+      "args": ["scan", "--config", "auto", "--json", "."]
+    },
+    "gitleaks": {
+      "command": "gitleaks",
+      "args": ["detect", "--no-git", "--report-format", "json"]
+    },
+    "osv-scanner": {
+      "command": "osv-scanner",
+      "args": ["--format", "json", "-r", "."]
+    }
+  }
+}

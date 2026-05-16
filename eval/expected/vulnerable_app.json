@@ -1,0 +1,29 @@
+{
+  "target": "examples/vulnerable_app",
+  "checks": [
+    {
+      "id": "sqli-login",
+      "must_match": ["SQL", "login", "users"]
+    },
+    {
+      "id": "command-injection-ping",
+      "must_match": ["command", "ping"]
+    },
+    {
+      "id": "path-traversal-file",
+      "must_match": ["path traversal", "file"]
+    },
+    {
+      "id": "idor-user",
+      "must_match": ["IDOR", "user"]
+    },
+    {
+      "id": "hardcoded-secret",
+      "must_match": ["secret"]
+    },
+    {
+      "id": "weak-md5",
+      "must_match": ["MD5"]
+    }
+  ]
+}

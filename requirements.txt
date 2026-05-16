@@ -1,4 +1,9 @@
-langgraph>=0.3.0
+# <2.0: create_react_agent из langgraph.prebuilt удаляется в V2.0.
+langgraph>=0.3.0,<2.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
 python-dotenv>=1.0.0
+# SQLite-чекпоинтер LangGraph: персистентность состояния графа между
+# прогонами — пауза на interrupt() и возобновление сессии анализа.
+# >=3.1: ранние ветки тянут langgraph-checkpoint<4 и ломают langgraph 1.x.
+langgraph-checkpoint-sqlite>=3.1,<4.0
