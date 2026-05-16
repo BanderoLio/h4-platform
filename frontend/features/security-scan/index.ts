@@ -8,6 +8,7 @@ export {
 } from './security-scan.api';
 export type {
   ScanStatus,
+  ScanInterruptType,
   StartScanRequest,
   StartScanResponse,
   ScanReportResponse,

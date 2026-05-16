@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MarkdownContent } from '@/components/markdown-content';
+import { ThinkingIndicator } from '@/components/thinking-indicator';
 import {
   getScanReport,
   listScanSessions,
@@ -141,6 +142,11 @@ function resolveReportMessage(
   emptyFailedReport: string,
   awaitingInputFallback: string,
 ) {
+  // When the scan pauses, surface the agent's actual question so the user
+  // knows what to answer; fall back to a generic prompt only if missing.
+  if (report.status === 'awaiting_input') {
+    return report.question?.trim() || awaitingInputFallback;
+  }
   const reportContent = report.report?.trim();
   if (reportContent) {
     return reportContent;
@@ -223,8 +229,12 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
         offset: 0,
       });
       const targetRepoUrl = normalizeRepositoryUrl(repositoryUrl);
+      // Match on the original git URL (repo_url). `item.repo` is the
+      // server-side clone path and never equals the registry URL.
       const repoSessions = sessionList.items.filter(
-        (item) => normalizeRepositoryUrl(item.repo) === targetRepoUrl,
+        (item) =>
+          !!item.repo_url &&
+          normalizeRepositoryUrl(item.repo_url) === targetRepoUrl,
       );
 
       updateWorkspace((current) => {
@@ -486,28 +496,60 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
       return;
     }
 
+    // Render the user message and a "thinking" placeholder immediately —
+    // before POST /scan/start resolves — so the chat reflects the request
+    // with no dead window. The scan id is unknown until the backend
+    // answers, so the session starts under a temporary id and is swapped
+    // for the real one once /scan/start returns.
+    const placeholderSessionId = `pending-${pendingAssistantMessage.id}`;
+    const startedAt = new Date().toISOString();
+    const placeholderSession: AgentSession = {
+      id: placeholderSessionId,
+      title: promptText.slice(0, 80),
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      status: 'running',
+      messages: [userMessage, pendingAssistantMessage],
+    };
+
+    updateWorkspace((current) => ({
+      ...current,
+      activeSessionId: placeholderSessionId,
+      sessions: upsertSession(current.sessions, placeholderSession),
+    }));
+
+    // Tracks the session the pending message currently lives under, so an
+    // error can be attached whether it fails before or after the id swap.
+    let pendingSessionId = placeholderSessionId;
+
     try {
       const { scan_id: scanId } = await startScan({
         repo_url: repositoryUrl,
         interactive: true,
         query: promptText,
       });
-      const now = new Date().toISOString();
-      const startedSession: AgentSession = {
-        id: scanId,
-        title: promptText.slice(0, 80),
-        createdAt: now,
-        updatedAt: now,
-        status: 'running',
-        lastScanId: scanId,
-        messages: [userMessage, pendingAssistantMessage],
-      };
 
-      updateWorkspace((current) => ({
-        ...current,
-        activeSessionId: scanId,
-        sessions: upsertSession(current.sessions, startedSession),
-      }));
+      // Swap the temporary id for the real scan id, keeping the transcript.
+      updateWorkspace((current) => {
+        const placeholder =
+          current.sessions.find((item) => item.id === placeholderSessionId) ??
+          placeholderSession;
+        const startedSession: AgentSession = {
+          ...placeholder,
+          id: scanId,
+          lastScanId: scanId,
+          updatedAt: new Date().toISOString(),
+        };
+        const withoutPlaceholder = current.sessions.filter(
+          (item) => item.id !== placeholderSessionId,
+        );
+        return {
+          ...current,
+          activeSessionId: scanId,
+          sessions: upsertSession(withoutPlaceholder, startedSession),
+        };
+      });
+      pendingSessionId = scanId;
 
       const report = await waitForScanReportState(scanId, t('reportTimeout'));
       finalizeAssistantMessage(scanId, pendingAssistantMessage.id, report);
@@ -519,6 +561,12 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
         t('scanNotFound'),
       );
       setRequestError(message);
+      // Surface the failure inside the chat too, not only as a banner.
+      markPendingMessageAsError(
+        pendingSessionId,
+        pendingAssistantMessage.id,
+        message,
+      );
     } finally {
       setIsSending(false);
     }
@@ -678,12 +726,16 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
                   </div>
 
                   {message.role === 'assistant' ? (
-                    <MarkdownContent
-                      content={message.content}
-                      className={cn(
-                        message.status === 'error' && 'text-destructive',
-                      )}
-                    />
+                    message.status === 'pending' ? (
+                      <ThinkingIndicator label={message.content} />
+                    ) : (
+                      <MarkdownContent
+                        content={message.content}
+                        className={cn(
+                          message.status === 'error' && 'text-destructive',
+                        )}
+                      />
+                    )
                   ) : (
                     <p className="text-sm whitespace-pre-wrap">
                       {message.content}
