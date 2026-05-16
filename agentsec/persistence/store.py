@@ -46,6 +46,7 @@ class SessionRecord:
     title: str                               # краткий заголовок (из задачи)
     repo: str                                # путь к анализируемому репо
     task: str                                # исходная задача
+    repo_url: str | None = None              # исходный git-URL (если клон)
     status: str = STATUS_RUNNING
     interrupt_type: str | None = None        # 'clarify' / 'gate' при паузе
     interrupt_payload: dict[str, Any] | None = None  # что показать пользователю
@@ -65,7 +66,7 @@ class SessionRecord:
 # JSON-поля: в БД хранятся как TEXT, в SessionRecord — как dict/list.
 _JSON_FIELDS = ("interrupt_payload", "verdict", "findings", "coverage")
 _COLUMNS = (
-    "id", "title", "repo", "task", "status", "interrupt_type",
+    "id", "title", "repo", "task", "repo_url", "status", "interrupt_type",
     "interrupt_payload", "verdict", "report_md", "findings", "coverage",
     "error", "created_at", "updated_at",
 )
@@ -116,6 +117,7 @@ class SqliteSessionStore(SessionStore):
                     title             TEXT NOT NULL,
                     repo              TEXT NOT NULL,
                     task              TEXT NOT NULL,
+                    repo_url          TEXT,
                     status            TEXT NOT NULL,
                     interrupt_type    TEXT,
                     interrupt_payload TEXT,
@@ -144,7 +146,7 @@ class SqliteSessionStore(SessionStore):
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
-        for column in ("findings", "coverage"):
+        for column in ("findings", "coverage", "repo_url"):
             if column not in existing:
                 self._conn.execute(
                     f"ALTER TABLE sessions ADD COLUMN {column} TEXT"

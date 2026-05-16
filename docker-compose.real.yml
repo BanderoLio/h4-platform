@@ -1,0 +1,26 @@
+# Override: run the REAL agentsec orchestrator instead of the bundled stub.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.real.yml up --build
+#
+# Requires a real OpenAI-compatible LLM endpoint. Set in .env:
+#   OPENAI_API_KEY   (required)
+#   MODEL            (optional, default gpt-4o-mini)
+#   OPENAI_BASE_URL  (optional — OpenRouter / Ollama / vLLM / LM Studio)
+#
+# Scans now perform real multi-agent analysis: they take minutes and may
+# pause for clarification (the workspace shows the agent's question).
+
+services:
+  backend:
+    # Distinct image tag so real/stub modes don't overwrite each other.
+    image: security-agent-backend-real
+    build:
+      # Repo root, so the agentsec package can be bundled into the image.
+      context: .
+      dockerfile: deploy/backend.real.Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      MODEL: ${MODEL:-gpt-4o-mini}
+      # agentsec writes its session DB to the working dir; sessions are
+      # ephemeral across restarts (agentsec has no configurable DB path yet).

@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# agent-scan CLI: generated reports / mounted Docker output dir
+reports/
+scan-report-*.txt
+scan-result-*.json

@@ -12,7 +12,6 @@ Tests can force transitions via env `AGENTSEC_STUB_BEHAVIOR`:
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import uuid
@@ -32,8 +31,10 @@ class SessionRecord:
     repo: str
     task: str
     status: str
+    repo_url: str | None = None
     interrupt_type: str | None = None
-    interrupt_payload: str | None = None
+    # Mirrors the real store: decoded dict, not a JSON string.
+    interrupt_payload: dict[str, Any] | None = None
     verdict: str | None = None
     report_md: str | None = None
     error: str | None = None
@@ -53,9 +54,16 @@ def _touch(rec: SessionRecord) -> None:
     rec.updated_at = _utc_now()
 
 
-def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
+def start_session(
+    task: str,
+    repo: str,
+    *,
+    interactive: bool = True,
+    session_id: str | None = None,
+    repo_url: str | None = None,
+) -> str:
     """Create a session row and schedule analysis (stub: apply behavior immediately)."""
-    sid = str(uuid.uuid4())
+    sid = session_id or str(uuid.uuid4())
     title = (task or "").strip()[:60] or "(empty task)"
     behavior = _behavior()
     with _lock:
@@ -64,6 +72,7 @@ def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
             title=title,
             repo=repo,
             task=task,
+            repo_url=repo_url,
             status="running",
         )
         if behavior == "instant_completed":
@@ -78,7 +87,7 @@ def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
             if interactive:
                 rec.status = "awaiting_input"
                 rec.interrupt_type = "clarify"
-                rec.interrupt_payload = json.dumps({"type": "clarify", "question": "Stub: any details?"})
+                rec.interrupt_payload = {"type": "clarify", "question": "Stub: any details?"}
             else:
                 rec.status = "completed"
                 rec.report_md = f"[stub] non-interactive skipped clarify for `{repo}`"
@@ -87,9 +96,11 @@ def start_session(task: str, repo: str, *, interactive: bool = True) -> str:
             if interactive:
                 rec.status = "awaiting_input"
                 rec.interrupt_type = "gate"
-                rec.interrupt_payload = json.dumps(
-                    {"type": "gate", "question": "Stub: approve?", "verdict": {"ok": True}}
-                )
+                rec.interrupt_payload = {
+                    "type": "gate",
+                    "question": "Stub: approve?",
+                    "verdict": {"ok": True},
+                }
             else:
                 rec.status = "completed"
                 rec.report_md = f"[stub] non-interactive skipped gate for `{repo}`"

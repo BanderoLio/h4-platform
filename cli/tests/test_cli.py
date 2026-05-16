@@ -7,7 +7,12 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from agent_scan_cli.cli import build_parser, main, run_interactive
-from agent_scan_cli.client import ReportNotReady, ScanFailed, ScanNotFound
+from agent_scan_cli.client import (
+    ReportNotReady,
+    ScanAuthError,
+    ScanFailed,
+    ScanNotFound,
+)
 from agent_scan_cli.interactive import InteractiveApp
 from agent_scan_cli.terminal import Terminal
 
@@ -126,6 +131,50 @@ class CliTests(unittest.TestCase):
         interactive.assert_called_once_with(
             initial_base_url="http://api.test", initial_timeout=9, initial_api_key=None
         )
+
+
+class InteractiveAuthRetryTests(unittest.TestCase):
+    """The interactive mode must recover from a missing/invalid API key by
+    prompting for one and retrying, instead of failing the whole action."""
+
+    @staticmethod
+    def _app(inputs: list[str]) -> InteractiveApp:
+        feed = iter(inputs)
+        terminal = Terminal(
+            input_func=lambda _prompt: next(feed, ""),
+            output=lambda *args, **_kwargs: None,
+            color=False,
+        )
+        app = InteractiveApp(terminal=terminal)
+        # Start with no key regardless of the test runner's environment.
+        app.state.api_key = None
+        return app
+
+    def test_auth_retry_prompts_for_key_and_retries(self) -> None:
+        app = self._app(["entered-key"])
+        seen_keys: list[str | None] = []
+
+        def action() -> str:
+            seen_keys.append(app.state.api_key)
+            if app.state.api_key is None:
+                raise ScanAuthError("Scan API rejected the request (HTTP 403).")
+            return "done"
+
+        result = app._call_with_auth_retry(action)
+
+        self.assertEqual(result, "done")
+        self.assertEqual(app.state.api_key, "entered-key")
+        self.assertEqual(seen_keys, [None, "entered-key"])
+
+    def test_auth_retry_reraises_when_key_prompt_cancelled(self) -> None:
+        # Empty input == cancel: the auth error propagates unchanged.
+        app = self._app([""])
+
+        def action() -> str:
+            raise ScanAuthError("Scan API rejected the request (HTTP 403).")
+
+        with self.assertRaises(ScanAuthError):
+            app._call_with_auth_retry(action)
 
 
 if __name__ == "__main__":

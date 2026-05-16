@@ -41,8 +41,13 @@ import type {
   WorkspaceStore,
 } from '@/features/repositories';
 
-const MAX_REPORT_ATTEMPTS = 120;
 const REPORT_POLL_INTERVAL_MS = 2500;
+// Real agentsec scans run for many minutes — poll long enough to follow one
+// to its terminal state instead of falsely timing out at ~5 minutes.
+const REPORT_MAX_WAIT_MS = 45 * 60 * 1000;
+// A long poll may hit a transient backend/proxy hiccup; tolerate a few in a
+// row before giving up so one blip does not abort a running scan.
+const REPORT_MAX_CONSECUTIVE_ERRORS = 5;
 const SESSION_SYNC_INTERVAL_MS = 8000;
 const SESSION_SYNC_LIMIT = 200;
 
@@ -90,10 +95,28 @@ function resolveErrorMessage(
 }
 
 async function waitForScanReportState(scanId: string, timeoutMessage: string) {
-  for (let attempt = 0; attempt < MAX_REPORT_ATTEMPTS; attempt += 1) {
-    const report = await getScanReport(scanId);
-    if (report.status !== 'running') {
-      return report;
+  const deadline = Date.now() + REPORT_MAX_WAIT_MS;
+  let consecutiveErrors = 0;
+
+  while (Date.now() < deadline) {
+    try {
+      const report = await getScanReport(scanId);
+      consecutiveErrors = 0;
+      // `running` -> keep polling; awaiting_input / completed / failed -> done.
+      if (report.status !== 'running') {
+        return report;
+      }
+    } catch (error) {
+      // 404 means the scan genuinely does not exist — stop immediately.
+      const axiosError = error as AxiosError;
+      if (axiosError.response?.status === 404) {
+        throw error;
+      }
+      // Network blip, proxy 502, transient 5xx — retry a bounded number of times.
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= REPORT_MAX_CONSECUTIVE_ERRORS) {
+        throw error;
+      }
     }
     await sleep(REPORT_POLL_INTERVAL_MS);
   }
@@ -176,6 +199,10 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isSyncingSessions, setIsSyncingSessions] = useState(false);
+  // True after "New run" is clicked: forces the empty composer even when the
+  // repository already has sessions. Without it, activeSession falls back to
+  // sessions[0] and the button appears to do nothing.
+  const [isComposingNewRun, setIsComposingNewRun] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
   const repository = useMemo(
@@ -188,15 +215,19 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
     () => workspaces[repoId] ?? createEmptyWorkspace(repoId),
     [repoId, workspaces],
   );
-  const activeSession = useMemo(
-    () =>
+  const activeSession = useMemo(() => {
+    // "New run" mode: show the empty composer, ignore any existing session.
+    if (isComposingNewRun) {
+      return null;
+    }
+    return (
       workspace.sessions.find(
         (session) => session.id === workspace.activeSessionId,
       ) ??
       workspace.sessions[0] ??
-      null,
-    [workspace],
-  );
+      null
+    );
+  }, [workspace, isComposingNewRun]);
   const quickPrompts = useMemo(
     () => [t('quickPrompt1'), t('quickPrompt2'), t('quickPrompt3')],
     [t],
@@ -411,6 +442,7 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
   }, [repositoryId, syncSessionsFromBackend]);
 
   const selectSession = (sessionId: string) => {
+    setIsComposingNewRun(false);
     updateWorkspace((current) => ({
       ...current,
       activeSessionId: sessionId,
@@ -419,6 +451,7 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
   };
 
   const createNewRun = () => {
+    setIsComposingNewRun(true);
     updateWorkspace((current) => ({
       ...current,
       activeSessionId: null,
@@ -517,6 +550,8 @@ export function RepoWorkspacePage({ repoId }: RepoWorkspacePageProps) {
       activeSessionId: placeholderSessionId,
       sessions: upsertSession(current.sessions, placeholderSession),
     }));
+    // The run now exists — leave "new run" mode so its transcript is shown.
+    setIsComposingNewRun(false);
 
     // Tracks the session the pending message currently lives under, so an
     // error can be attached whether it fails before or after the id swap.

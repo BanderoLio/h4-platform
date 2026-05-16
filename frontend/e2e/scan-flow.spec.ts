@@ -66,3 +66,24 @@ test('a registered repository survives a page reload', async ({ page }) => {
   await page.reload();
   await expect(page.getByText(REPO_NAME, { exact: true })).toBeVisible();
 });
+
+test('the "New run" button clears the chat back to an empty composer', async ({
+  page,
+}) => {
+  await page.goto('/en/repos');
+  await page.getByLabel('Repository URL').fill(REPO_URL);
+  await page.getByRole('button', { name: 'Add repository' }).click();
+  await page.getByRole('link', { name: /Open workspace/i }).click();
+
+  // Run a scan so the repository already has a session.
+  await page.getByPlaceholder(/Ask the security agent/i).fill('First scan');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByText(/completed for repo/i)).toBeVisible({
+    timeout: 60_000,
+  });
+
+  // "New run" must drop the active session and show the empty composer —
+  // not silently fall back to the latest session.
+  await page.getByRole('button', { name: 'New run' }).click();
+  await expect(page.getByText('Start the first prompt')).toBeVisible();
+});
