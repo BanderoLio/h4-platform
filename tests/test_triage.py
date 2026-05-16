@@ -122,19 +122,6 @@ class TriageTest(unittest.TestCase):
         sliced = self.triage._read_slice("bundle.min.js", 1, 1)
         self.assertLess(len(sliced), 7000)
 
-    def test_scanner_findings_become_top_priority_candidates(self):
-        # Находка semgrep должна попасть в кандидаты и встать первой
-        # (риск сканера выше regex-эвристики).
-        from agentsec.index.store import IndexStore, index_db_path
-        store = IndexStore(index_db_path(CONFIG.analysis_root))
-        store.replace_scanner_findings([{
-            "tool": "semgrep", "rule": "python.lang.security.sql-injection",
-            "vuln_class": "injection", "file": "app.py", "line": 4,
-            "severity": "ERROR", "message": "tainted SQL"}])
-        store.close()
-        cands, _ = self.triage._gather("injection")
-        self.assertTrue(cands and cands[0]["kind"].startswith("semgrep:"))
-
     def test_extract_json_array(self):
         self.assertEqual(self.triage._extract_json_array("шум [1,2] хвост"),
                          [1, 2])

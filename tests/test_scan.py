@@ -49,5 +49,48 @@ class ValidatorJsonTest(unittest.TestCase):
             _extract_json("никакого джейсона тут нет")
 
 
+class ScannerFindingsNodeTest(unittest.TestCase):
+    """semgrep-находки из индекса → прямые Finding-и (узел графа)."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from agentsec.config import CONFIG
+        from agentsec.index import index_repo
+        from agentsec.index.store import IndexStore, index_db_path
+
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        (root / "app.py").write_text("def f(): pass\n", encoding="utf-8")
+        index_repo(root)[0].close()
+        store = IndexStore(index_db_path(root))
+        store.replace_scanner_findings([
+            {"tool": "semgrep", "rule": "py.security.sqli",
+             "vuln_class": "injection", "file": "app.py", "line": 1,
+             "severity": "ERROR", "message": "tainted SQL"},
+            {"tool": "semgrep", "rule": "py.audit.weak-hash",
+             "vuln_class": "secrets", "file": "app.py", "line": 1,
+             "severity": "WARNING", "message": "md5"},
+        ])
+        store.close()
+        self._saved_root = CONFIG.analysis_root
+        CONFIG.analysis_root = root
+
+    def tearDown(self) -> None:
+        from agentsec.config import CONFIG
+        CONFIG.analysis_root = self._saved_root
+        self._tmp.cleanup()
+
+    def test_semgrep_findings_become_direct_findings(self):
+        from agentsec.graph import _scanner_findings_node
+        out = _scanner_findings_node({})
+        findings = out["raw_findings"]
+        self.assertEqual(len(findings), 2)
+        sev = {f.severity for f in findings}
+        self.assertEqual(sev, {"High", "Medium"})        # ERROR→High, WARNING→Medium
+        self.assertTrue(all(f.found_by == ["semgrep"] for f in findings))
+
+
 if __name__ == "__main__":
     unittest.main()

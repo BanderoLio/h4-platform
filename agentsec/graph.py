@@ -44,6 +44,7 @@ from .schema import (
     VERDICT_PASS,
     VERDICT_REVIEW,
     Coverage,
+    Finding,
     compute_verdict,
     deduplicate,
     parse_findings_markdown,
@@ -309,6 +310,48 @@ def _recon(state: AnalysisState) -> dict:
     }
 
 
+# semgrep severity → severity нашей схемы.
+_SEMGREP_SEVERITY = {"ERROR": "High", "WARNING": "Medium", "INFO": "Low"}
+
+
+def _scanner_findings_node(state: AnalysisState) -> dict:
+    """Находки semgrep → прямые `Finding`-и.
+
+    semgrep — доверенный детерминистический источник: его находки не
+    проходят через LLM-триаж (который их скептически отсеивал), а сразу
+    становятся находками. Их независимо проверит узел-валидатор —
+    скептик отсечёт ложные, а реальные останутся.
+    """
+    path = index_db_path(Path(CONFIG.analysis_root))
+    if not path.exists():
+        return {}
+    store = IndexStore(path)
+    try:
+        rows = Q.scanner_findings(store)
+    finally:
+        store.close()
+    findings: list[Finding] = []
+    for r in rows:
+        rule = r.get("rule") or "semgrep"
+        findings.append(Finding(
+            title=f"semgrep: {rule.split('.')[-1][:60]}",
+            severity=_SEMGREP_SEVERITY.get(
+                str(r.get("severity", "")).upper(), "Low"),
+            confidence="Likely",
+            vuln_class=r.get("vuln_class", "unknown"),
+            file=f"{r['file']}:{r['line']}",
+            description=r.get("message", ""),
+            found_by=[r.get("tool", "semgrep")],
+            evidence={"semgrep_rule": rule},
+        ))
+    _log(f"[scanners] находок semgrep включено: {len(findings)}")
+    return {
+        "raw_findings": findings,
+        "coverage": [Coverage(area="scanners", status="done",
+                              note=f"semgrep: {len(findings)} находок")],
+    }
+
+
 def _make_specialist_node(vuln_class: str, runner):
     """Фабрика узла-специалиста: запуск с ретраями, парсинг markdown→Finding."""
     label = SPECIALIST_LABELS[vuln_class]
@@ -472,6 +515,7 @@ def build_graph(checkpointer=None):
             f"specialist_{vuln_class}",
             _make_specialist_node(vuln_class, runners[vuln_class]),
         )
+    graph.add_node("scanner_findings", _scanner_findings_node)
     graph.add_node("consolidate", _consolidate)
     graph.add_node("validate", make_validator_node())
     graph.add_node("gate", _gate)
@@ -486,11 +530,13 @@ def build_graph(checkpointer=None):
     graph.add_edge("clarify", "index")
     # index строит Repo Map до разведки — recon и специалисты его используют.
     graph.add_edge("index", "recon")
-    # recon → три специалиста параллельно (общий superstep)…
+    # recon → три специалиста + узел находок сканеров параллельно…
     for vuln_class in _FOCUS_CLASSES:
         graph.add_edge("recon", f"specialist_{vuln_class}")
         # …и сходятся на consolidate (узел ждёт все ветки).
         graph.add_edge(f"specialist_{vuln_class}", "consolidate")
+    graph.add_edge("recon", "scanner_findings")
+    graph.add_edge("scanner_findings", "consolidate")
     graph.add_edge("consolidate", "validate")
     graph.add_edge("validate", "gate")
     graph.add_edge("gate", "report")
