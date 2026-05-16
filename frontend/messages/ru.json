@@ -1,0 +1,119 @@
+{
+  "Navbar": {
+    "mainAria": "Главная навигация",
+    "title": "Security Agent",
+    "subtitle": "Рабочее пространство репозитория",
+    "repositories": "Репозитории"
+  },
+  "Footer": {
+    "title": "ИИ-агент кибербезопасности",
+    "description": "Управляйте репозиториями и запускайте агент-сессии в одном интерфейсе.",
+    "repositories": "Репозитории",
+    "rights": "@ {year} Security Agent"
+  },
+  "RepositoriesPage": {
+    "eyebrow": "Управление репозиториями",
+    "title": "Сначала добавьте репозитории",
+    "subtitle": "Добавляйте Git-репозитории в локальное хранилище фронтенда и открывайте отдельный workspace для каждого.",
+    "formTitle": "Добавить репозиторий",
+    "urlLabel": "URL репозитория",
+    "urlPlaceholder": "https://github.com/owner/repo",
+    "urlHint": "Этот URL используется при вызове API сканирования.",
+    "nameLabel": "Название (опционально)",
+    "namePlaceholder": "owner/repo",
+    "nameHint": "Если пусто, имя будет получено из URL.",
+    "descriptionLabel": "Заметка (опционально)",
+    "descriptionPlaceholder": "Короткий контекст по репозиторию",
+    "descriptionHint": "Заметки сохраняются только в этом браузере.",
+    "formErrorTitle": "Не удалось добавить репозиторий",
+    "addAction": "Добавить репозиторий",
+    "listTitle": "Сохраненные репозитории",
+    "countSyncing": "Синхронизация сессий...",
+    "count": "Репозиториев: {count}",
+    "empty": "Пока нет репозиториев. Добавьте первый, чтобы начать.",
+    "sessions": "Запусков: {count}",
+    "lastOpened": "Открыт: {date}",
+    "neverOpened": "Еще не открывался",
+    "openWorkspace": "Открыть workspace",
+    "deleteAction": "Удалить",
+    "deleteConfirm": "Удалить репозиторий \"{name}\" и локальную историю сессий?",
+    "validation": {
+      "url": "Введите корректный URL репозитория",
+      "nameTooLong": "Слишком длинное имя",
+      "descriptionTooLong": "Слишком длинное описание"
+    },
+    "errors": {
+      "duplicateUrl": "Такой URL репозитория уже сохранен."
+    },
+    "toasts": {
+      "added": "Репозиторий \"{name}\" добавлен",
+      "deleted": "Репозиторий \"{name}\" удален"
+    }
+  },
+  "RepoWorkspace": {
+    "newSessionTitle": "Новый запуск агента",
+    "newSessionAction": "Новый запуск",
+    "sessionSyncLabel": "История сессий синхронизируется с backend",
+    "sessionHistoryEmpty": "По этому репозиторию пока нет запусков.",
+    "deleteSession": "Удалить запуск",
+    "backToRepositories": "Репозитории",
+    "repositoryNotFoundTitle": "Репозиторий не найден",
+    "repositoryNotFoundDescription": "Этот репозиторий отсутствует в локальном хранилище.",
+    "emptyStateTitle": "Начните с первого запроса",
+    "emptyStateDescription": "Каждый запрос создает или продолжает агент-сессию для текущего репозитория.",
+    "quickPrompt1": "Проверь этот репозиторий и перечисли блокеры релиза.",
+    "quickPrompt2": "Найди самые критичные риски безопасности и объясни их влияние.",
+    "quickPrompt3": "Дай вердикт ship или block с кратким обоснованием.",
+    "promptRequired": "Введите промпт перед отправкой.",
+    "promptPlaceholder": "Спросите security-агента про этот репозиторий...",
+    "resumePlaceholder": "Введите ответ, который запросил агент...",
+    "sendAction": "Отправить",
+    "resumeAction": "Продолжить",
+    "youLabel": "Вы",
+    "assistantLabel": "Security agent",
+    "assistantThinking": "Запускаю сканирование и собираю отчет...",
+    "assistantFailedPrefix": "Не удалось завершить сканирование.",
+    "awaitingInputTitle": "Требуется ввод",
+    "awaitingInputDescription": "Агент ожидает дополнительный ответ. Отправьте его, чтобы продолжить.",
+    "awaitingInputDefault": "Агент ожидает дополнительный ввод.",
+    "status": {
+      "idle": "Ожидание",
+      "running": "Выполняется",
+      "awaiting_input": "Ожидает ввод",
+      "completed": "Завершено",
+      "failed": "Ошибка"
+    },
+    "requestErrorTitle": "Ошибка запроса",
+    "scanNotFound": "Сканирование не найдено.",
+    "reportTimeout": "Время ожидания отчета истекло.",
+    "emptyDoneReport": "Сканирование завершено, но отчет пустой.",
+    "emptyFailedReport": "Сканирование завершилось ошибкой без деталей отчета."
+  },
+  "CodeBlock": {
+    "copy": "Скопировать",
+    "copiedLabel": "Скопировано",
+    "copySuccess": "Код скопирован в буфер обмена",
+    "copyError": "Не удалось скопировать код"
+  },
+  "Settings": {
+    "menuLabel": "Открыть настройки",
+    "theme": "Тема",
+    "light": "Светлая",
+    "dark": "Темная",
+    "language": "Язык"
+  },
+  "LocaleSwitcher": {
+    "label": "Язык",
+    "en": "English",
+    "ru": "Русский"
+  },
+  "Common": {
+    "somethingWentWrong": "Что-то пошло не так",
+    "tryAgain": "Попробовать снова"
+  },
+  "Errors": {
+    "NotFound": "Ресурс не найден",
+    "InternalServerError": "Внутренняя ошибка сервера",
+    "default": "Произошла ошибка"
+  }
+}

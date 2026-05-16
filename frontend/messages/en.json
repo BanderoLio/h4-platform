@@ -1,0 +1,119 @@
+{
+  "Navbar": {
+    "mainAria": "Main navigation",
+    "title": "Security Agent",
+    "subtitle": "Repository workspace",
+    "repositories": "Repositories"
+  },
+  "Footer": {
+    "title": "AI Cybersecurity Agent",
+    "description": "Manage repositories and run agent sessions in one place.",
+    "repositories": "Repositories",
+    "rights": "@ {year} Security Agent"
+  },
+  "RepositoriesPage": {
+    "eyebrow": "Repository management",
+    "title": "Connect repositories first",
+    "subtitle": "Add Git repositories to local storage, then open a dedicated workspace for each repository.",
+    "formTitle": "Add repository",
+    "urlLabel": "Repository URL",
+    "urlPlaceholder": "https://github.com/owner/repo",
+    "urlHint": "This repository URL is used when calling the scanning API.",
+    "nameLabel": "Display name (optional)",
+    "namePlaceholder": "owner/repo",
+    "nameHint": "If empty, name is derived from URL.",
+    "descriptionLabel": "Notes (optional)",
+    "descriptionPlaceholder": "Short context about this repository",
+    "descriptionHint": "Notes are stored only in this browser.",
+    "formErrorTitle": "Unable to add repository",
+    "addAction": "Add repository",
+    "listTitle": "Saved repositories",
+    "countSyncing": "Syncing sessions...",
+    "count": "{count, plural, =0 {No repositories} one {# repository} other {# repositories}}",
+    "empty": "No repositories yet. Add the first one to start.",
+    "sessions": "{count, plural, =0 {No runs yet} one {# run} other {# runs}}",
+    "lastOpened": "Opened: {date}",
+    "neverOpened": "Never opened",
+    "openWorkspace": "Open workspace",
+    "deleteAction": "Delete",
+    "deleteConfirm": "Delete repository \"{name}\" and local session history?",
+    "validation": {
+      "url": "Enter a valid repository URL",
+      "nameTooLong": "Name is too long",
+      "descriptionTooLong": "Description is too long"
+    },
+    "errors": {
+      "duplicateUrl": "This repository URL is already saved."
+    },
+    "toasts": {
+      "added": "Repository \"{name}\" added",
+      "deleted": "Repository \"{name}\" removed"
+    }
+  },
+  "RepoWorkspace": {
+    "newSessionTitle": "New agent run",
+    "newSessionAction": "New run",
+    "sessionSyncLabel": "Session history is synced from backend",
+    "sessionHistoryEmpty": "No runs for this repository yet.",
+    "deleteSession": "Delete run",
+    "backToRepositories": "Repositories",
+    "repositoryNotFoundTitle": "Repository not found",
+    "repositoryNotFoundDescription": "This repository is missing from local storage.",
+    "emptyStateTitle": "Start the first prompt",
+    "emptyStateDescription": "Each prompt creates or continues an agent run for this repository.",
+    "quickPrompt1": "Review this repository and list release blockers.",
+    "quickPrompt2": "Find the most critical security risks and explain impact.",
+    "quickPrompt3": "Give a ship or block verdict with short reasoning.",
+    "promptRequired": "Enter a prompt before sending.",
+    "promptPlaceholder": "Ask the security agent about this repository...",
+    "resumePlaceholder": "Provide input required by the agent...",
+    "sendAction": "Send",
+    "resumeAction": "Resume",
+    "youLabel": "You",
+    "assistantLabel": "Security agent",
+    "assistantThinking": "Running scan and collecting report...",
+    "assistantFailedPrefix": "Failed to complete scan.",
+    "awaitingInputTitle": "Input required",
+    "awaitingInputDescription": "Agent is waiting for additional input. Submit your answer to continue.",
+    "awaitingInputDefault": "Agent is waiting for additional input.",
+    "status": {
+      "idle": "Idle",
+      "running": "Running",
+      "awaiting_input": "Awaiting input",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "requestErrorTitle": "Request failed",
+    "scanNotFound": "Scan was not found.",
+    "reportTimeout": "Timed out while waiting for scan report.",
+    "emptyDoneReport": "Scan finished, but report is empty.",
+    "emptyFailedReport": "Scan failed without report details."
+  },
+  "CodeBlock": {
+    "copy": "Copy",
+    "copiedLabel": "Copied",
+    "copySuccess": "Code copied to clipboard",
+    "copyError": "Failed to copy code"
+  },
+  "Settings": {
+    "menuLabel": "Open settings menu",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "language": "Language"
+  },
+  "LocaleSwitcher": {
+    "label": "Language",
+    "en": "English",
+    "ru": "Русский"
+  },
+  "Common": {
+    "somethingWentWrong": "Something went wrong",
+    "tryAgain": "Try again"
+  },
+  "Errors": {
+    "NotFound": "Resource not found",
+    "InternalServerError": "Internal server error",
+    "default": "An error occurred"
+  }
+}
