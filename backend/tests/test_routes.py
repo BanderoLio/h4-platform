@@ -14,6 +14,7 @@ async def test_start_scan_returns_session_id_from_agentsec(client, monkeypatch):
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -24,7 +25,7 @@ async def test_start_scan_returns_session_id_from_agentsec(client, monkeypatch):
     assert resp.json() == {"scan_id": "sess-123"}
     assert called == {
         "task": "Security scan for repository https://github.com/example/repo",
-        "repo": "https://github.com/example/repo",
+        "repo": "/tmp/local-repo",
         "interactive": True,
     }
 
@@ -38,6 +39,7 @@ async def test_start_scan_passes_interactive_flag(client, monkeypatch):
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -57,6 +59,7 @@ async def test_start_scan_uses_query_as_task(client, monkeypatch):
         return "sess-123"
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
 
     resp = await client.post(
         "/scan/start",
@@ -129,12 +132,29 @@ async def test_start_scan_returns_503_when_session_layer_unavailable(client, mon
         raise RuntimeError("session backend down")
 
     monkeypatch.setattr("app.routes.scan.start_session", fake_start_session)
+    monkeypatch.setattr("app.routes.scan._materialize_repo", lambda _: "/tmp/local-repo")
     resp = await client.post(
         "/scan/start",
         json={"repo_url": "https://github.com/example/repo"},
         headers=AUTH,
     )
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_start_scan_returns_422_when_repo_clone_fails(client, monkeypatch):
+    from fastapi import HTTPException
+
+    def fake_materialize_repo(repo_url: str):
+        raise HTTPException(status_code=422, detail="failed to clone repository: boom")
+
+    monkeypatch.setattr("app.routes.scan._materialize_repo", fake_materialize_repo)
+    resp = await client.post(
+        "/scan/start",
+        json={"repo_url": "https://github.com/example/repo"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
