@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from .client import (
     ScanFailed,
     ScanNotFound,
     default_report_path,
+    default_result_path,
 )
 from .interactive import InteractiveApp
 
@@ -36,7 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start a repository scan.",
         parents=[connection_options],
     )
-    start.add_argument("repo_url", help="Repository URL to scan.")
+    start.add_argument(
+        "repo_url",
+        help="Repository to scan: an http(s) URL (cloned by the backend) "
+        "or a server-side local path (needs ALLOWED_LOCAL_ROOTS).",
+    )
     start.add_argument("--webhook-url", help="Optional URL to receive the report when the scan completes.")
 
     report = subparsers.add_parser(
@@ -52,7 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start a scan and wait until the TXT report is ready.",
         parents=[connection_options],
     )
-    scan.add_argument("repo_url", help="Repository URL to scan.")
+    scan.add_argument(
+        "repo_url",
+        help="Repository to scan: an http(s) URL (cloned by the backend) "
+        "or a server-side local path (needs ALLOWED_LOCAL_ROOTS).",
+    )
     scan.add_argument("--webhook-url", help="Optional URL to receive the report when the scan completes.")
     scan.add_argument("-o", "--output", type=Path, help="Where to write the TXT report.")
     scan.add_argument("--interval", type=float, default=5.0, help="Polling interval in seconds.")
@@ -61,6 +71,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=600.0,
         help="Maximum time to wait for the report in seconds. Use 0 to wait forever.",
+    )
+
+    result = subparsers.add_parser(
+        "result",
+        help="Fetch the structured JSON result of a scan and exit with its quality-gate code.",
+        parents=[connection_options],
+    )
+    result.add_argument("scan_id", help="Scan id returned by the start command.")
+    result.add_argument("-o", "--output", type=Path, help="Where to write the JSON result.")
+    result.add_argument("--interval", type=float, default=5.0, help="Polling interval in seconds.")
+    result.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=600.0,
+        help="Maximum time to wait for the result in seconds. Use 0 to wait forever.",
+    )
+    result.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="Do not poll: fail with code 4 if the scan is not finished yet.",
     )
 
     return parser
@@ -135,6 +165,9 @@ def _run_command(args: argparse.Namespace) -> int:
             print(f"Report saved: {output}")
             return 0
 
+        if args.command == "result":
+            return _run_result(client, args)
+
         raise AssertionError(f"Unknown command: {args.command}")
     except ReportNotReady:
         print("Report is still running.", file=sys.stderr)
@@ -154,6 +187,37 @@ def _run_command(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
+
+
+def _run_result(client: ScanClient, args: argparse.Namespace) -> int:
+    """Fetch the structured result and return the quality-gate exit code.
+
+    The return value is the orchestrator's CI code (0 = pass, 1 = fail,
+    2 = needs review), so `agent-scan result` can gate a pipeline directly.
+    """
+    if args.no_wait:
+        data = client.get_result(args.scan_id)
+    else:
+        wait_timeout = None if args.wait_timeout == 0 else args.wait_timeout
+        data = client.wait_for_result(
+            args.scan_id, interval=args.interval, timeout=wait_timeout
+        )
+
+    output = args.output or default_result_path(args.scan_id)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    summary = data.get("summary", {}) if isinstance(data, dict) else {}
+    counts = summary.get("severity_counts") or {}
+    counts_str = ", ".join(f"{k}: {v}" for k, v in counts.items()) or "—"
+    print(f"Result saved: {output}", file=sys.stderr)
+    print(
+        f"Quality gate: {summary.get('verdict', 'N/A')} | "
+        f"problems: {summary.get('total_problems', 0)} ({counts_str})",
+        file=sys.stderr,
+    )
+    exit_code = summary.get("exit_code")
+    return exit_code if isinstance(exit_code, int) else 1
 
 
 def _add_connection_options(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:

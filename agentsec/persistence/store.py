@@ -51,6 +51,8 @@ class SessionRecord:
     interrupt_payload: dict[str, Any] | None = None  # что показать пользователю
     verdict: dict[str, Any] | None = None    # JSON-сводка quality gate
     report_md: str | None = None             # итоговый markdown-отчёт
+    findings: list[dict[str, Any]] | None = None  # структурные находки (JSON)
+    coverage: list[dict[str, Any]] | None = None  # трекинг покрытия (JSON)
     error: str | None = None                 # текст исключения при failed
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -60,12 +62,12 @@ class SessionRecord:
         return asdict(self)
 
 
-# JSON-поля: в БД хранятся как TEXT, в SessionRecord — как dict.
-_JSON_FIELDS = ("interrupt_payload", "verdict")
+# JSON-поля: в БД хранятся как TEXT, в SessionRecord — как dict/list.
+_JSON_FIELDS = ("interrupt_payload", "verdict", "findings", "coverage")
 _COLUMNS = (
     "id", "title", "repo", "task", "status", "interrupt_type",
-    "interrupt_payload", "verdict", "report_md", "error",
-    "created_at", "updated_at",
+    "interrupt_payload", "verdict", "report_md", "findings", "coverage",
+    "error", "created_at", "updated_at",
 )
 
 
@@ -119,6 +121,8 @@ class SqliteSessionStore(SessionStore):
                     interrupt_payload TEXT,
                     verdict           TEXT,
                     report_md         TEXT,
+                    findings          TEXT,
+                    coverage          TEXT,
                     error             TEXT,
                     created_at        TEXT NOT NULL,
                     updated_at        TEXT NOT NULL
@@ -129,7 +133,22 @@ class SqliteSessionStore(SessionStore):
                 "CREATE INDEX IF NOT EXISTS idx_sessions_created "
                 "ON sessions (created_at DESC)"
             )
+            self._migrate_columns()
             self._conn.commit()
+
+    def _migrate_columns(self) -> None:
+        """Догоняет схему БД, созданной прежней версией: добавляет колонки,
+        появившиеся позже (`findings`, `coverage`). SQLite ALTER TABLE ADD
+        COLUMN дёшев и безопасен — старые строки получают NULL."""
+        existing = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        for column in ("findings", "coverage"):
+            if column not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE sessions ADD COLUMN {column} TEXT"
+                )
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> SessionRecord:

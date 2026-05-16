@@ -9,6 +9,8 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from .schema import VERDICT_EXIT_CODE, VERDICT_FAIL, severity_key
+
 
 def _slug(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-")
@@ -55,6 +57,86 @@ def findings_to_jsonable(findings: list[Any] | None = None, markdown: str | None
     if markdown:
         return _markdown_to_finding_dicts(markdown)
     return []
+
+
+def _split_file_line(value: str) -> tuple[str, int | None]:
+    """Разбивает `path/to/file.py:42` на отдельные путь и номер строки.
+
+    CI-потребителю удобнее иметь `file` и `line` отдельными полями
+    (аннотации в PR/MR привязываются к строке). Терпимо к тому, как
+    специалисты пишут локацию: markdown-обрамление в backtick-и и диапазон
+    строк (`file.py:33-51`) — из диапазона берётся первая строка.
+    """
+    cleaned = (value or "").strip().strip("`").strip()
+    match = re.search(r":(\d+)(?:-\d+)?\s*$", cleaned)
+    if match:
+        return cleaned[: match.start()].strip(), int(match.group(1))
+    return cleaned, None
+
+
+def build_structured_result(
+    *,
+    findings: list[Any] | None = None,
+    verdict: dict[str, Any] | None = None,
+    coverage: list[Any] | None = None,
+    status: str = "completed",
+    scan_id: str = "",
+    task: str = "",
+    repo: str = "",
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Платформо-нейтральный машиночитаемый результат скана для CI.
+
+    Форма: `{summary, problems, coverage}` — `summary` несёт вердикт
+    quality gate и `exit_code` для гейтинга пайплайна, `problems` — плоский
+    список находок с разнесёнными `file`/`line`. Не привязан к GitHub/GitLab:
+    любой пайплайн читает один и тот же JSON.
+    """
+    verdict = verdict or {}
+    problems: list[dict[str, Any]] = []
+    for d in findings_to_jsonable(findings):
+        file_path, line = _split_file_line(str(d.get("file", "")))
+        problems.append({
+            "id": d.get("id") or "",
+            "title": d.get("title", ""),
+            "severity": severity_key(str(d.get("severity", "Info"))),
+            "confidence": d.get("confidence", ""),
+            "status": d.get("status", ""),
+            "vuln_class": d.get("vuln_class", ""),
+            "cwe": d.get("cwe", ""),
+            "cvss": d.get("cvss"),
+            "file": file_path,
+            "line": line,
+            "description": d.get("description", ""),
+            "data_flow": d.get("data_flow", ""),
+            "recommendation": d.get("recommendation", ""),
+            "found_by": d.get("found_by", []) or [],
+        })
+    # Упавший скан вердикта не имеет — для CI это всегда блокирующий результат.
+    decision = verdict.get("verdict") or (VERDICT_FAIL if status == "failed" else "N/A")
+    exit_code = 1 if status == "failed" else VERDICT_EXIT_CODE.get(decision, 1)
+    summary: dict[str, Any] = {
+        "verdict": decision,
+        "exit_code": exit_code,
+        "total_problems": verdict.get("total_findings", len(problems)),
+        "severity_counts": verdict.get("severity_counts", {}),
+        "blocking": verdict.get("blocking", []),
+        "needs_review": verdict.get("needs_review", []),
+        "repo": repo,
+        "task": task,
+    }
+    if verdict.get("user_decision"):
+        summary["user_decision"] = verdict["user_decision"]
+    result: dict[str, Any] = {
+        "scan_id": scan_id,
+        "status": status,
+        "summary": summary,
+        "problems": problems,
+        "coverage": [_finding_to_dict(c) for c in (coverage or [])],
+    }
+    if error:
+        result["error"] = error
+    return result
 
 
 def _render_finding(finding: Any) -> str:
