@@ -177,6 +177,7 @@ def render_report(
     coverage: list[Any] | None = None,
     task: str = "",
     repo: str = "",
+    repo_map: dict[str, Any] | None = None,
 ) -> str:
     """Собирает итоговый markdown-отчёт из структурных находок, вердикта
     quality gate и трекинга покрытия."""
@@ -210,6 +211,12 @@ def render_report(
         lines.append("")
     lines.append("## Покрытие")
     lines.append("")
+    if repo_map:
+        lines.append(
+            f"- Repo Map: {repo_map.get('files', 0)} файлов, "
+            f"{repo_map.get('symbols', 0)} символов, "
+            f"{repo_map.get('entry_points', 0)} точек входа, "
+            f"{repo_map.get('sinks', 0)} sink-ов проиндексировано")
     if coverage:
         for item in coverage:
             d = _finding_to_dict(item)

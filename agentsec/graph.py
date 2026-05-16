@@ -16,13 +16,27 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .agents.specialists import SPECIALIST_LABELS, make_specialist_runners
+from .agents.triage import triage_specialist
 from .agents.validator import make_validator_node
 from .config import CONFIG, elapsed
+from .index import index_repo
+from .index import query as Q
+from .index.model import (
+    SINK_COMMAND,
+    SINK_CRYPTO,
+    SINK_DESERIALIZE,
+    SINK_EVAL,
+    SINK_FILE,
+    SINK_SQL,
+    SINK_SSRF,
+)
+from .index.store import IndexStore, index_db_path
 from .llm import build_llm
 from .prompts import INTAKE_PROMPT
 from .reporting import render_report
@@ -81,7 +95,105 @@ def _intake(state: AnalysisState) -> dict:
 
 
 def _route_after_intake(state: AnalysisState) -> str:
-    return "clarify" if state.get("needs_clarification") else "recon"
+    return "clarify" if state.get("needs_clarification") else "index"
+
+
+def _index(state: AnalysisState) -> dict:
+    """Строит Repo Map — детерминированный индекс кодовой базы.
+
+    Индекс (символы, граф вызовов, точки входа, sink-и) кэшируется в
+    `.agentsec/index.db` цели и переиндексируется инкрементально. Это
+    «контекст по репозиторию»: специалисты запрашивают карту вместо
+    слепого обхода. Сбой индексации не роняет граф — анализ продолжится
+    на grep-инструментах.
+    """
+    try:
+        store, stats = index_repo(Path(CONFIG.analysis_root))
+        summary = Q.summary(store)
+        store.close()
+        _log(f"[index] Repo Map: {summary['files']} файлов, "
+             f"{summary['symbols']} символов, "
+             f"{summary['entry_points']} точек входа, "
+             f"{summary['sinks']} sink-ов "
+             f"(переиндексировано {stats['indexed']}, "
+             f"переиспользовано {stats['reused']})")
+        return {"repo_map_summary": summary}
+    except Exception as err:  # noqa: BLE001 — индексация не критична для прогона
+        _log(f"[index] индексация не удалась: {err}")
+        return {"repo_map_summary": {}}
+
+
+# Какие виды sink-ов и нужны ли точки входа каждому классу специалистов.
+_CLASS_SINK_KINDS: dict[str, tuple[str, ...]] = {
+    "injection": (SINK_SQL, SINK_COMMAND, SINK_EVAL, SINK_SSRF,
+                  SINK_DESERIALIZE, SINK_FILE),
+    "secrets": (SINK_CRYPTO,),
+    "authnz": (),
+}
+_CLASS_USES_ENTRYPOINTS = {"injection", "authnz"}
+
+
+def _repo_map_section() -> str:
+    """Краткий обзор Repo Map для recon: масштаб и счётчики attack surface.
+
+    Детальные списки не разворачиваем — их несёт пер-классовый бриф
+    кандидатов в задаче специалиста (экономия контекста)."""
+    path = index_db_path(Path(CONFIG.analysis_root))
+    if not path.exists():
+        return ""
+    store = IndexStore(path)
+    try:
+        s = Q.summary(store)
+    finally:
+        store.close()
+    return (
+        "## Repo Map (индекс кодовой базы)\n"
+        f"Файлов: {s['files']}, языки: {s['languages']}, "
+        f"символов: {s['symbols']}.\n"
+        f"Attack surface: {s['entry_points']} точек входа, "
+        f"{s['sinks']} sink-ов по видам {s['sink_kinds']}.\n"
+        "Детали — инструментами repo_overview / find_entry_points / "
+        "find_sinks / find_symbol / who_calls / file_symbols."
+    )
+
+
+def _candidate_brief(vuln_class: str) -> tuple[str, int]:
+    """Список кандidatов класса из Repo Map для триажа специалистом.
+
+    Возвращает (текст брифа, всего кандидатов). Список обрезается бюджетом
+    `max_candidates_per_specialist` — остаток явно помечается непокрытым.
+    """
+    path = index_db_path(Path(CONFIG.analysis_root))
+    if not path.exists():
+        return "", 0
+    store = IndexStore(path)
+    try:
+        items: list[str] = []
+        for kind in _CLASS_SINK_KINDS.get(vuln_class, ()):
+            for s in Q.sinks(store, kind=kind):
+                items.append(f"  {s['file']}:{s['line']} [sink:{s['kind']}] "
+                             f"{s['snippet']}")
+        if vuln_class in _CLASS_USES_ENTRYPOINTS:
+            for e in Q.entry_points(store):
+                items.append(f"  {e['file']}:{e['line']} [entry:{e['kind']}] "
+                             f"{e['name']} {e['detail']}".rstrip())
+    finally:
+        store.close()
+
+    total = len(items)
+    if total == 0:
+        return "", 0
+    cap = CONFIG.max_candidates_per_specialist
+    lines = [f"## Кандидаты для триажа из Repo Map — всего {total}"]
+    lines += items[:cap]
+    if total > cap:
+        lines.append(f"  ... ещё {total - cap} кандидатов вне бюджета "
+                     f"({cap}) — добери через find_sinks / find_entry_points")
+    lines.append(
+        "Триаж: по КАЖДОМУ кандидату проверь достижимость недоверенного "
+        "ввода и подтверди уязвимость либо отклони (ложное срабатывание). "
+        "Затем добери то, что индекс мог пропустить.")
+    return "\n".join(lines), total
 
 
 def _clarify(state: AnalysisState) -> dict:
@@ -111,18 +223,35 @@ def _recon(state: AnalysisState) -> dict:
     parts: list[str] = []
     coverage: list[Coverage] = []
 
-    explore_q = (
-        f"Изучи репозиторий под задачу: {task}. Опиши структуру, языки и "
-        "фреймворки, точки входа (HTTP-роуты, CLI, обработчики), ключевые "
-        "файлы и attack surface."
-    )
-    try:
-        parts.append("## Разведка кодовой базы\n" +
-                      minions["explore_codebase"].invoke({"query": explore_q}))
-        coverage.append(Coverage(area="recon:codebase", status="done"))
-    except Exception as err:  # noqa: BLE001
-        coverage.append(Coverage(area="recon:codebase", status="error",
-                                 note=str(err)[:200]))
+    # Repo Map идёт первым: специалисты получают карту attack surface
+    # ещё до свободной разведки миньонов.
+    repo_section = _repo_map_section()
+    if repo_section:
+        parts.append(repo_section)
+
+    # На большом репо explore-миньон (ReAct-агент) избыточен и медленен —
+    # Repo Map уже даёт структуру/attack surface детерминированно. Гоняем
+    # explore только на небольших репозиториях.
+    files = (state.get("repo_map_summary") or {}).get("files", 0)
+    if files and files > CONFIG.explore_skip_files:
+        _log(f"[recon] большой репо ({files} файлов) — explore-миньон "
+             "пропущен, используется Repo Map")
+        coverage.append(Coverage(area="recon:codebase", status="done",
+                                 note="Repo Map (explore-миньон пропущен)"))
+    else:
+        explore_q = (
+            f"Изучи репозиторий под задачу: {task}. Опиши структуру, языки и "
+            "фреймворки, точки входа (HTTP-роуты, CLI, обработчики), ключевые "
+            "файлы и attack surface."
+        )
+        try:
+            parts.append("## Разведка кодовой базы\n" +
+                          minions["explore_codebase"].invoke(
+                              {"query": explore_q}))
+            coverage.append(Coverage(area="recon:codebase", status="done"))
+        except Exception as err:  # noqa: BLE001
+            coverage.append(Coverage(area="recon:codebase", status="error",
+                                     note=str(err)[:200]))
 
     try:
         parts.append("## Документация и модель безопасности\n" +
@@ -159,18 +288,38 @@ def _make_specialist_node(vuln_class: str, runner):
         if CONFIG.stub_specialists:
             return {"coverage": [Coverage(area=vuln_class, status="gap",
                                           note="стаб-режим")]}
-        scope = state.get("scope") or {}
-        focus = vuln_class in (scope.get("focus") or _FOCUS_CLASSES)
         clar = "\n".join(
             f"Q: {c['question']}\nA: {c['answer']}"
             for c in state.get("clarifications", [])
         )
+        # Triage-режим: если Repo Map построен — детерминированный триаж
+        # кандидатов (инкрементально, с бюджетом; частичный результат
+        # сохраняется при исчерпании времени).
+        if index_db_path(Path(CONFIG.analysis_root)).exists():
+            task_text = state["task"] + (
+                f"\n\nУточнения пользователя:\n{clar}" if clar else "")
+            try:
+                return triage_specialist(vuln_class, task_text)
+            except Exception as err:  # noqa: BLE001 — сбой триажа не роняет граф
+                _log(f"[{label}] триаж упал: {err}")
+                return {
+                    "coverage": [Coverage(area=vuln_class, status="error",
+                                          note=str(err)[:200])],
+                    "errors": [f"триаж {label}: {err}"],
+                }
+
+        # Fallback: индекса нет (маленький репо/индексация не удалась) —
+        # exploratory ReAct-специалист.
+        scope = state.get("scope") or {}
+        focus = vuln_class in (scope.get("focus") or _FOCUS_CLASSES)
+        brief, n_candidates = _candidate_brief(vuln_class)
         task = (
             f"Задача пользователя: {state['task']}\n\n"
             f"{state.get('recon', '')}\n\n"
             + (f"Уточнения пользователя:\n{clar}\n\n" if clar else "")
             + ("Этот класс уязвимостей в приоритете задачи.\n"
                if focus else "")
+            + (f"{brief}\n\n" if brief else "")
             + "Проверь репозиторий на свой класс уязвимостей и верни "
               "markdown-отчёт строго по FINDING_FORMAT."
         )
@@ -194,7 +343,10 @@ def _make_specialist_node(vuln_class: str, runner):
                     f.evidence.setdefault("specialist_report", markdown[:2000])
                 return {
                     "raw_findings": findings,
-                    "coverage": [Coverage(area=vuln_class, status="done")],
+                    "coverage": [Coverage(
+                        area=vuln_class, status="done",
+                        note=f"кандидатов из Repo Map: {n_candidates}, "
+                             f"находок: {len(findings)}")],
                 }
             last_err = f"пустой отчёт ({len(markdown)} симв.)"
             _log(f"[{label}] попытка {attempt}: {last_err}, ретрай")
@@ -260,6 +412,7 @@ def _report(state: AnalysisState) -> dict:
         coverage=state.get("coverage", []),
         task=state.get("task", ""),
         repo=state.get("repo", ""),
+        repo_map=state.get("repo_map_summary") or {},
     )
     return {"report_md": report}
 
@@ -283,6 +436,7 @@ def build_graph(checkpointer=None):
 
     graph.add_node("intake", _intake)
     graph.add_node("clarify", _clarify)
+    graph.add_node("index", _index)
     graph.add_node("recon", _recon)
     for vuln_class in _FOCUS_CLASSES:
         graph.add_node(
@@ -295,11 +449,14 @@ def build_graph(checkpointer=None):
     graph.add_node("report", _report)
 
     graph.add_edge(START, "intake")
+    # intake → index напрямую, либо через clarify (уточнение скоупа).
     graph.add_conditional_edges(
         "intake", _route_after_intake,
-        {"clarify": "clarify", "recon": "recon"},
+        {"clarify": "clarify", "index": "index"},
     )
-    graph.add_edge("clarify", "recon")
+    graph.add_edge("clarify", "index")
+    # index строит Repo Map до разведки — recon и специалисты его используют.
+    graph.add_edge("index", "recon")
     # recon → три специалиста параллельно (общий superstep)…
     for vuln_class in _FOCUS_CLASSES:
         graph.add_edge("recon", f"specialist_{vuln_class}")

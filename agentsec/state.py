@@ -24,7 +24,8 @@ class AnalysisState(TypedDict, total=False):
     clarifying_question: str         # вопрос, сформулированный intake
     clarifications: list[dict]       # история Q&A с пользователем
 
-    # --- recon ---
+    # --- index / recon ---
+    repo_map_summary: dict[str, Any]  # сводка Repo Map (см. agentsec/index)
     recon: str                       # сводка разведки для специалистов
     scanner_outputs: dict[str, str]  # сырой вывод детерминистических сканеров
 

@@ -18,6 +18,7 @@ from ..config import CONFIG
 _SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
     "dist", "build", ".idea", ".mypy_cache", ".pytest_cache", ".tox",
+    ".agentsec",
 }
 
 
@@ -41,11 +42,14 @@ def _confirm(action: str) -> bool:
 
 
 @tool
-def read_file(path: str) -> str:
+def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     """Прочитать текстовый файл по пути относительно корня анализа.
 
-    Возвращает содержимое с нумерацией строк (формат 'N<TAB>текст'),
-    обрезанное по лимиту, чтобы не переполнять контекст.
+    Возвращает содержимое с нумерацией строк (формат 'N<TAB>текст').
+    offset — номер первой строки (1-based), limit — сколько строк читать.
+    Для больших файлов читай нужное окно (offset/limit), а не файл
+    целиком — это экономит контекст. Без offset/limit читается начало
+    файла до символьного лимита.
     """
     try:
         p = _resolve(path)
@@ -58,13 +62,29 @@ def read_file(path: str) -> str:
     except Exception as e:  # noqa: BLE001 — инструмент не должен падать
         return f"ОШИБКА чтения {path}: {e}"
 
-    limit = CONFIG.read_file_max_chars
-    truncated = len(text) > limit
+    lines = text.splitlines()
+    total = len(lines)
+    char_limit = CONFIG.read_file_max_chars
+
+    if offset or limit:
+        start = max(0, offset - 1)
+        count = limit if limit > 0 else total
+        window = lines[start:start + count]
+        numbered = "\n".join(f"{start + i + 1}\t{ln}"
+                             for i, ln in enumerate(window))
+        if len(numbered) > char_limit:
+            numbered = numbered[:char_limit] + "\n... [обрезано по символам]"
+        shown_to = start + len(window)
+        header = f"[строки {start + 1}-{shown_to} из {total}]"
+        return f"{header}\n{numbered}" if window else f"{header}\n(пусто)"
+
+    truncated = len(text) > char_limit
     if truncated:
-        text = text[:limit]
+        text = text[:char_limit]
     numbered = "\n".join(f"{i}\t{ln}" for i, ln in enumerate(text.splitlines(), 1))
     if truncated:
-        numbered += f"\n... [обрезано: показан лимит {limit} символов]"
+        numbered += (f"\n... [обрезано: показан лимит {char_limit} символов; "
+                     f"всего строк {total} — дочитай через offset/limit]")
     return numbered or "(пустой файл)"
 
 

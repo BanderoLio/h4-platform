@@ -101,12 +101,15 @@ class InterruptResumeTest(unittest.TestCase):
     def setUp(self) -> None:
         self._saved = (
             CONFIG.stub_specialists, CONFIG.interactive, CONFIG.run_scanners,
-            CONFIG.server_mode, G.build_llm, G.make_validator_node,
+            CONFIG.server_mode, CONFIG.analysis_root,
+            G.build_llm, G.make_validator_node,
         )
         CONFIG.stub_specialists = True
         CONFIG.run_scanners = False
         CONFIG.interactive = True   # вопросы задаём…
         CONFIG.server_mode = True   # …и ставим граф на паузу через interrupt()
+        self._idx_tmp = tempfile.TemporaryDirectory()
+        CONFIG.analysis_root = Path(self._idx_tmp.name)  # узел index → пустой каталог
         G.build_llm = lambda *a, **k: _ClarifyLLM()
         G.make_validator_node = lambda: (
             lambda state: {"validated_findings": state.get("findings", [])}
@@ -122,11 +125,13 @@ class InterruptResumeTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         (CONFIG.stub_specialists, CONFIG.interactive, CONFIG.run_scanners,
-         CONFIG.server_mode, G.build_llm, G.make_validator_node) = self._saved
+         CONFIG.server_mode, CONFIG.analysis_root,
+         G.build_llm, G.make_validator_node) = self._saved
         import agentsec.agents.minions as minions_mod
 
         minions_mod.make_minion_tools = self._saved_minions
         self._tmp.cleanup()
+        self._idx_tmp.cleanup()
 
     def test_pause_at_clarify_then_gate_then_complete(self):
         graph = G.build_graph(checkpointer=make_checkpointer(self._db))

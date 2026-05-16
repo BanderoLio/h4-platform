@@ -65,7 +65,12 @@ analyze_secrets_crypto, analyze_authnz) и не получил их отчёты
 # Общая часть промпта для всех специалистов.
 _SPECIALIST_COMMON = f"""\
 Методика работы:
-- Ищи и читай код инструментами `grep`, `glob_files`, `list_dir`, `read_file`.
+- СНАЧАЛА используй Repo Map — индекс кодовой базы: `repo_overview`,
+  `find_entry_points` (attack surface), `find_sinks` (опасные операции),
+  `find_symbol`, `who_calls`, `file_symbols`. Иди от точек входа к sink-ам
+  по карте, а не обходи репозиторий слепым grep.
+- Ищи и читай код инструментами `grep`, `glob_files`, `list_dir`, `read_file`
+  (для больших файлов — `read_file` с offset/limit, не весь файл).
 - Делегируй разведку структуры миньону `explore_codebase`, чтение
   документации — миньону `read_docs`.
 - Для известных CVE в зависимостях используй `resolve_project_dependencies`

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 
 from langchain_core.tools import tool
@@ -54,16 +55,34 @@ def make_minion_tools() -> list:
     def _run_minion(agent, label: str, query: str) -> str:
         t0 = time.perf_counter()
         print(f"[+{elapsed()}]       .. миньон {label} запущен")
-        try:
-            result = agent.invoke({"messages": [("user", query)]}, run_cfg)
-            out = result["messages"][-1].content
-        except Exception as err:  # noqa: BLE001 — сбой миньона не должен ронять прогон
-            dt = time.perf_counter() - t0
-            print(f"[+{elapsed()}]       !! миньон {label} упал за {dt:.0f}с: {err}")
-            return f"[Миньон '{label}' не смог выполнить запрос из-за ошибки: {err}]"
+        # ReAct-петлю гоним в daemon-потоке: join с таймаутом даёт жёсткий
+        # лимит времени. У миниона нет внешней recursion-границы, без
+        # таймаута он может идти неограниченно (на большом репо — минуты).
+        box: dict = {}
+
+        def _work() -> None:
+            try:
+                result = agent.invoke({"messages": [("user", query)]}, run_cfg)
+                box["out"] = result["messages"][-1].content
+            except Exception as err:  # noqa: BLE001
+                box["error"] = err
+
+        worker = threading.Thread(target=_work, daemon=True)
+        worker.start()
+        worker.join(CONFIG.minion_timeout_sec)
         dt = time.perf_counter() - t0
+        if worker.is_alive():
+            print(f"[+{elapsed()}]       !! миньон {label} превысил лимит "
+                  f"{CONFIG.minion_timeout_sec}с — прерван")
+            return (f"[Миньон '{label}' превысил лимит "
+                    f"{CONFIG.minion_timeout_sec}с и был прерван]")
+        if "error" in box:
+            print(f"[+{elapsed()}]       !! миньон {label} упал за "
+                  f"{dt:.0f}с: {box['error']}")
+            return (f"[Миньон '{label}' не смог выполнить запрос из-за "
+                    f"ошибки: {box['error']}]")
         print(f"[+{elapsed()}]       .. миньон {label} завершил за {dt:.0f}с")
-        return out
+        return box["out"]
 
     @tool
     def explore_codebase(query: str) -> str:
