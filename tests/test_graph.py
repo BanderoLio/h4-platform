@@ -33,7 +33,7 @@ class TestGraphStructure(unittest.TestCase):
         compiled = G.build_graph()
         nodes = set(compiled.nodes)
         for expected in (
-            "intake", "clarify", "recon", "consolidate",
+            "intake", "clarify", "index", "recon", "consolidate",
             "validate", "gate", "report",
             "specialist_injection", "specialist_secrets", "specialist_authnz",
         ):
@@ -45,8 +45,8 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(
             G._route_after_intake({"needs_clarification": True}), "clarify")
         self.assertEqual(
-            G._route_after_intake({"needs_clarification": False}), "recon")
-        self.assertEqual(G._route_after_intake({}), "recon")
+            G._route_after_intake({"needs_clarification": False}), "index")
+        self.assertEqual(G._route_after_intake({}), "index")
 
 
 class TestConsolidate(unittest.TestCase):

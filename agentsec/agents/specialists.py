@@ -24,6 +24,7 @@ from ..tools.filesystem import (
     read_file,
     write_file,
 )
+from ..tools.repomap import repo_map_tools
 from ..tools.scanners import run_gitleaks, run_osv_scanner, run_semgrep
 from .minions import make_minion_tools
 
@@ -54,7 +55,9 @@ def make_specialist_runners() -> dict[str, Callable[[str], str]]:
         run_gitleaks,
         run_osv_scanner,
     ]
-    tools = base_tools + make_minion_tools()
+    # Repo Map: специалист идёт от точек входа к sink-ам по индексу,
+    # а не обходит репозиторий слепым grep.
+    tools = base_tools + repo_map_tools() + make_minion_tools()
     run_cfg = {"recursion_limit": CONFIG.recursion_limit}
 
     agents = {

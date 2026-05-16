@@ -6,7 +6,9 @@ validate → gate → report) БЕЗ сети: LLM, миньоны и специ
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from agentsec import graph as G
 from agentsec.config import CONFIG
@@ -38,12 +40,16 @@ class GraphSmokeTest(unittest.TestCase):
     def setUp(self) -> None:
         self._saved = (
             CONFIG.stub_specialists, CONFIG.interactive, CONFIG.run_scanners,
-            G.build_llm, G.make_validator_node,
+            CONFIG.analysis_root, G.build_llm, G.make_validator_node,
         )
         # Специалисты — стабы; интерактив и сканеры выключены.
         CONFIG.stub_specialists = True
         CONFIG.interactive = False
         CONFIG.run_scanners = False
+        # Узел index индексирует CONFIG.analysis_root — направляем на пустой
+        # временный каталог, чтобы тест не трогал рабочее дерево.
+        self._tmp = tempfile.TemporaryDirectory()
+        CONFIG.analysis_root = Path(self._tmp.name)
         # Подменяем сетевые зависимости графа.
         G.build_llm = lambda *a, **k: _FakeLLM()
         G.make_validator_node = lambda: (
@@ -58,10 +64,11 @@ class GraphSmokeTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         (CONFIG.stub_specialists, CONFIG.interactive, CONFIG.run_scanners,
-         G.build_llm, G.make_validator_node) = self._saved
+         CONFIG.analysis_root, G.build_llm, G.make_validator_node) = self._saved
         import agentsec.agents.minions as minions_mod
 
         minions_mod.make_minion_tools = self._saved_minions
+        self._tmp.cleanup()
 
     def test_full_graph_runs_offline(self):
         compiled = G.build_graph()

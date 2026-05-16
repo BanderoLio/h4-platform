@@ -17,3 +17,6 @@ __pycache__/
 reports/
 
 .claude/
+
+# Repo Map / индекс кодовой базы цели
+.agentsec/

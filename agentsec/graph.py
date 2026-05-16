@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -23,6 +24,9 @@ from langgraph.types import interrupt
 from .agents.specialists import SPECIALIST_LABELS, make_specialist_runners
 from .agents.validator import make_validator_node
 from .config import CONFIG, elapsed
+from .index import index_repo
+from .index import query as Q
+from .index.store import IndexStore, index_db_path
 from .llm import build_llm
 from .prompts import INTAKE_PROMPT
 from .reporting import render_report
@@ -81,7 +85,69 @@ def _intake(state: AnalysisState) -> dict:
 
 
 def _route_after_intake(state: AnalysisState) -> str:
-    return "clarify" if state.get("needs_clarification") else "recon"
+    return "clarify" if state.get("needs_clarification") else "index"
+
+
+def _index(state: AnalysisState) -> dict:
+    """Строит Repo Map — детерминированный индекс кодовой базы.
+
+    Индекс (символы, граф вызовов, точки входа, sink-и) кэшируется в
+    `.agentsec/index.db` цели и переиндексируется инкрементально. Это
+    «контекст по репозиторию»: специалисты запрашивают карту вместо
+    слепого обхода. Сбой индексации не роняет граф — анализ продолжится
+    на grep-инструментах.
+    """
+    try:
+        store, stats = index_repo(Path(CONFIG.analysis_root))
+        summary = Q.summary(store)
+        store.close()
+        _log(f"[index] Repo Map: {summary['files']} файлов, "
+             f"{summary['symbols']} символов, "
+             f"{summary['entry_points']} точек входа, "
+             f"{summary['sinks']} sink-ов "
+             f"(переиндексировано {stats['indexed']}, "
+             f"переиспользовано {stats['reused']})")
+        return {"repo_map_summary": summary}
+    except Exception as err:  # noqa: BLE001 — индексация не критична для прогона
+        _log(f"[index] индексация не удалась: {err}")
+        return {"repo_map_summary": {}}
+
+
+def _repo_map_section() -> str:
+    """Текстовый дайджест Repo Map для контекста специалистов: точки
+    входа и sink-и с `file:line` — карта attack surface."""
+    path = index_db_path(Path(CONFIG.analysis_root))
+    if not path.exists():
+        return ""
+    store = IndexStore(path)
+    try:
+        summary = Q.summary(store)
+        eps = Q.entry_points(store)
+        sinks = Q.sinks(store)
+    finally:
+        store.close()
+    lines = [
+        "## Repo Map (индекс кодовой базы)",
+        f"Файлов: {summary['files']}, языки: {summary['languages']}, "
+        f"символов: {summary['symbols']}.",
+        "Запрашивай детали инструментами repo_overview / find_entry_points / "
+        "find_sinks / find_symbol / who_calls / file_symbols.",
+    ]
+    if eps:
+        lines.append(f"\nТочки входа (attack surface), {len(eps)} шт. — "
+                     "недоверенный ввод входит здесь:")
+        lines += [f"  {e['file']}:{e['line']} [{e['kind']}] {e['name']} "
+                  f"{e['detail']}".rstrip() for e in eps[:40]]
+        if len(eps) > 40:
+            lines.append(f"  ... ещё {len(eps) - 40} — см. find_entry_points")
+    if sinks:
+        lines.append(f"\nОпасные операции (sinks), {len(sinks)} шт. — "
+                     "кандидаты уязвимостей:")
+        lines += [f"  {s['file']}:{s['line']} [{s['kind']}] {s['snippet']}"
+                  for s in sinks[:60]]
+        if len(sinks) > 60:
+            lines.append(f"  ... ещё {len(sinks) - 60} — см. find_sinks")
+    return "\n".join(lines)
 
 
 def _clarify(state: AnalysisState) -> dict:
@@ -110,6 +176,12 @@ def _recon(state: AnalysisState) -> dict:
     _log("[recon] разведка кодовой базы")
     parts: list[str] = []
     coverage: list[Coverage] = []
+
+    # Repo Map идёт первым: специалисты получают карту attack surface
+    # ещё до свободной разведки миньонов.
+    repo_section = _repo_map_section()
+    if repo_section:
+        parts.append(repo_section)
 
     explore_q = (
         f"Изучи репозиторий под задачу: {task}. Опиши структуру, языки и "
@@ -283,6 +355,7 @@ def build_graph(checkpointer=None):
 
     graph.add_node("intake", _intake)
     graph.add_node("clarify", _clarify)
+    graph.add_node("index", _index)
     graph.add_node("recon", _recon)
     for vuln_class in _FOCUS_CLASSES:
         graph.add_node(
@@ -295,11 +368,14 @@ def build_graph(checkpointer=None):
     graph.add_node("report", _report)
 
     graph.add_edge(START, "intake")
+    # intake → index напрямую, либо через clarify (уточнение скоупа).
     graph.add_conditional_edges(
         "intake", _route_after_intake,
-        {"clarify": "clarify", "recon": "recon"},
+        {"clarify": "clarify", "index": "index"},
     )
-    graph.add_edge("clarify", "recon")
+    graph.add_edge("clarify", "index")
+    # index строит Repo Map до разведки — recon и специалисты его используют.
+    graph.add_edge("index", "recon")
     # recon → три специалиста параллельно (общий superstep)…
     for vuln_class in _FOCUS_CLASSES:
         graph.add_edge("recon", f"specialist_{vuln_class}")
